@@ -39,7 +39,7 @@ A `Makefile.win` for MinGW-w64 (MSYS2) is provided but **has not been tested** b
 
 Orthos reads its input from the current directory and writes its output there; run it in a copy of an input directory:
 
-    mkdir run && cp examples/biradical_l616/* run/ && cd run
+    mkdir run && cd run   # put name.nam, Magnetic.par, ODF.par and the .esr file here
     ../build/orthos
 
 Input files:
@@ -51,7 +51,6 @@ Input files:
 
 Output: `spec` / `out*.dat` (simulated spectrum), `Magnetic.out` and `ODF.out` (parameters as used or fitted), `discrepancy`, and diagnostic files (`basis*.out`, `liou*.out`, `tridiag*.out`, `tensors*.out`, `potential*.out`, `timing.out`).
 
-`examples/biradical_l616` is a small two-particle biradical example (`l616-000n.esr`, 810 points).
 
 ## Third-party code and licences
 
