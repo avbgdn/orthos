@@ -1,0 +1,11 @@
+NSpectra:                1
+Minimization:            no
+NParticles:              2
+
+InputODF:                ODF.par
+OutputODF:               ODF.out
+InputMagnetic:           Magnetic.par
+OutputMagnetic:          Magnetic.out
+
+Spectra:
+l616-000n.esr    30.0     0

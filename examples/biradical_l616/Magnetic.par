@@ -1,0 +1,129 @@
+
+Particle: 0
+
+ConformerGroup: 0
+ConversionRate: 
+ 0 1   1.00000e006  2
+
+g1Tensor:           2.009000    0      2.006000    0      2.002100    3    
+g1Euler:            0.000000    0      0.000000    0     +0.000000    0    
+g2Tensor:           2.009000    6      2.006000    6      2.002100    6    
+g2Euler:           +0.000000    0      0.000000    0     +0.000000    0    
+
+A1Tensor:           3.850686    0      2.990745    0     32.870000    0    
+A1Euler:           +0.000000    0     +0.000000    0     +0.000000    0    
+A2Tensor:           3.850686    6      2.990745    6     32.870000    6    
+A2Euler:           90.000000    8     90.000000    8     +0.000000    8    
+
+GaussTensor:        0.000000    0      0.000000    0      0.000000    0    
+GaussEuler:        +0.000000    0     +0.000000    0     +0.000000    0    
+LorentzTensor:      1.000000    1      1.000000    5      1.000000    5    
+LorentzEuler:      +0.000000    0     +0.000000    0     +0.000000    0    
+
+Dipolar_vector:   11.600000     0      0.000000    0      0.000000    0    
+ZFS:                0.000000    0     +0.000000   0    
+Exchange:          1000.00000    0    
+
+Libration:          0.000000    0      0.000000    0      0.000000    0    
+LibrationEuler:     0.000000    0      0.000000    0      0.000000    0    
+LibDistrWidth:      0.000000    0      0.000000    0      0.000000    0    
+LibDistrNSites:   0    
+                              
+Diffusion:        1.000000e+008    2    1.000000e+008   5     1.000000e+008    5    
+DiffusionEuler:    +0.000000    0     +0.000000    0     +0.000000    0    
+DiffusionType:      0.00    0.00    0.00        // Eperp, Eperp*, Epar 
+RTau:               0.000000    0      0.000000    0      0.000000    0          
+
+Potential:        no
+
+Hyperfine:        no
+
+Truncation:      0  0  0  0              // LE, LO, K, M 
+
+Pruning:          0        64.00000       0.00100    // NPrune dHPrune PruningTolerance
+
+LanczosSteps:     500
+FCenter:         3300             0.0000    1   
+Amplitude:          1.00000    1    
+NPoints:             1000    
+DeltaH:           0.100000  
+Integration_Net:      1    
+IntegrateGaussKronrod
+TransitionCutoff: 0.000010  
+
+Algorithm:   NL2SOL  
+XTol: 1.000000e-005  
+FTol: 1.000000e-005  
+InitialStep: 1.000000e-006  
+
+
+Particle: 1
+
+ConformerGroup: 0
+
+g1Tensor:           2.009000   10      2.006000   10      2.002100   10    
+g1Euler:            0.000000    0      0.000000    0     +0.000000    0    
+g2Tensor:           2.009000   10      2.006000   10      2.002100   10    
+g2Euler:          +90.000000    0     90.000000    0     +0.000000    0    
+
+A1Tensor:           3.850686   10      2.990745   10     32.870000   10    
+A1Euler:           +0.000000    0     +0.000000    0     +0.000000    0    
+A2Tensor:           3.850686   10      2.990745   10     32.870000   10    
+A2Euler:           90.000000    8     90.000000    8     +0.000000    8    
+
+GaussTensor:        0.000000    0      0.000000    0      0.000000    0    
+GaussEuler:        +0.000000    0     +0.000000    0     +0.000000    0    
+LorentzTensor:      1.000000   10      1.000000   10      1.000000   10    
+LorentzEuler:      +0.000000    0     +0.000000    0     +0.000000    0    
+
+Dipolar_vector:   11.600000     0      0.000000    0      0.000000    0    
+ZFS:                0.000000    0     +0.000000   0    
+Exchange:           0.00000     0    
+
+Libration:          0.000000    0      0.000000    0      0.000000    0    
+LibrationEuler:     0.000000    0      0.000000    0      0.000000    0    
+LibDistrWidth:      0.000000    0      0.000000    0      0.000000    0    
+LibDistrNSites:   0    
+
+Diffusion:        1.000000e+008    10    1.000000e+008   5     1.000000e+008    5    
+DiffusionEuler:    +0.000000    0     +0.000000    0     +0.000000    0    
+DiffusionType:      0.00    0.00    0.00        // Eperp, Eperp*, Epar 
+RTau:               0.000000    0      0.000000    0      0.000000    0          
+
+Potential:        no
+
+Hyperfine:        no
+
+Truncation:      0      0      0      0             // LE, LO, K, M 
+
+Pruning:          0        64.00000       0.00100    // NPrune dHPrune PruningTolerance
+
+LanczosSteps:     500
+FCenter:         3356.400             0.0000    10   
+Amplitude:          1.00000    1    
+NPoints:             250    
+DeltaH:           0.500000  
+Integration_Net:      1    
+IntegrateGaussKronrod
+TransitionCutoff: 0.000010  
+
+
+
+VariateFlags:   1 - variate independently
+   2 - variate transformed value 
+   3 - calculate one g-tensor value based on constant average and 2 other values.
+   4 - tensor value is equal to y-value
+   5 - tensor value is equal to x-value 
+   6 - g2(A2) tensor values are equal to g1(A1)
+   7 - angles of A-tensor (or linewidth tensor) are inverse to those of g1-tensor (this means, this tensor is in the molecular frame)
+   7 - angles of Diffusion tensor are equal to those of g1-tensor (this means, diffusion tensor is in g1 frame)
+   8 - angles of A-tensor (or linewidth tensor) are equal to those of g2-tensor
+
+Possible Algorithm keywords: COBYLA, BOBYQA, PRAXIS, NELDERMEAD, SBPLX, details see http://ab-initio.mit.edu/wiki/index.php/NLopt_Algorithms 
+
+Euler angles of all magnetic tensors, except g1 and Diffusion, convert magnetic tensors into g1 tensor.
+DiffusionEuler angles convert Diffusion frame into molecular orientation frame.
+g1Euler angles convert g1 frame into molecular orientation frame. D-tensor is coaxial with g1 tensor
+#IntegrateGauss and IntegrateGaussKronrod flags indicate wheter it is necessary to integrate spectra over ODF on two progressive nets (IntegrateGaussKronrod) or not (IntegrateGauss)
+
+To safely stop the calculation on the current iteration, create the file named "stop" in the working directory

@@ -1,0 +1,57 @@
+# UNTESTED Makefile for MinGW-w64 (MSYS2 MinGW64 shell).
+#
+# The flags mirror the MinGW batch builds that produced the validation
+# executables of this code (g++ -std=c++17 -O2 -D__linux ...; gfortran -std=legacy).
+# -D__linux selects the POSIX code paths in main.cpp and Discrepancy.cpp.
+# This file has not been run by the maintainer of this repository.
+#
+# Packages (MSYS2): mingw-w64-x86_64-gcc, mingw-w64-x86_64-gcc-fortran,
+# mingw-w64-x86_64-fftw, mingw-w64-x86_64-nlopt, make
+#
+# Usage:  make -f Makefile.win
+
+CXX := g++
+FC := gfortran
+
+CXXFLAGS := -std=c++17 -O2 -D__linux -ftrivial-auto-var-init=zero -I.
+FFLAGS := -std=legacy -ffixed-form -ffixed-line-length-none -O2
+LDLIBS := -lfftw3 -lnlopt -lgfortran -lm
+
+OUTDIR := build_win
+OBJDIR := $(OUTDIR)/obj
+TARGET := $(OUTDIR)/orthos.exe
+
+CPPSRCS := BasisB.cpp BesselFunctions.cpp BiradicalTransitions.cpp Discrepancy.cpp \
+    GaussKronrodIntegration.cpp Hyperfine.cpp IndividualSpectrum.cpp IntegratedSpectrum.cpp \
+    Lanczos.cpp LiouvilleMatrixElementB.cpp LiouvillianB.cpp Multiplet.cpp ODF.cpp \
+    Potential.cpp RWMagnetic.cpp RWODF.cpp ReadExperimental.cpp ReadNamenam.cpp \
+    RotationMatrix.cpp SphericalTensor.cpp SpinMatrixBiradicals.cpp Version.cpp \
+    VoitlanderIntegration.cpp VoitlanderTriangleIntegrals.cpp \
+    Wigner3jMy.cpp Wigner3jm.cpp kronrod.cpp main.cpp simError.cpp
+CCSRCS := faddeeva.cc
+FSRCS := NL2SOL1.for Nl2def1.for
+
+CPPOBJS := $(patsubst %.cpp,$(OBJDIR)/%.o,$(CPPSRCS))
+CCOBJS := $(patsubst %.cc,$(OBJDIR)/%.o,$(CCSRCS))
+FOBJS := $(patsubst %.for,$(OBJDIR)/%.o,$(FSRCS))
+
+.PHONY: all clean
+all: $(TARGET)
+
+$(OBJDIR):
+	mkdir -p $(OBJDIR)
+
+$(OBJDIR)/%.o: %.cpp | $(OBJDIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJDIR)/%.o: %.cc | $(OBJDIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJDIR)/%.o: %.for | $(OBJDIR)
+	$(FC) $(FFLAGS) -c $< -o $@
+
+$(TARGET): $(CPPOBJS) $(CCOBJS) $(FOBJS)
+	$(CXX) -o $@ $(CPPOBJS) $(CCOBJS) $(FOBJS) $(LDLIBS)
+
+clean:
+	rm -rf $(OUTDIR)
