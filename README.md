@@ -54,4 +54,4 @@ Output: `spec` / `out*.dat` (simulated spectrum), `Magnetic.out` and `ODF.out` (
 
 ## Third-party code and licences
 
-See THIRD_PARTY.md. Read it before redistributing: two components have licence terms that need review.
+See THIRD_PARTY.md. Read it before redistributing: one component (NL2SOL) has a licence status that needs review.

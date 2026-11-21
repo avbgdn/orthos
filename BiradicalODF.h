@@ -52,7 +52,6 @@ using namespace std;
 
 #define MAX_PARTICLES 10
 
-#define MAX_WIGNER 201
 // Maximum number of axes for discrete jump model:
 #define MAX_JUMPS 10
 

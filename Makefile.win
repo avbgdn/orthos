@@ -27,7 +27,7 @@ CPPSRCS := BasisB.cpp BesselFunctions.cpp BiradicalTransitions.cpp Discrepancy.c
     Potential.cpp RWMagnetic.cpp RWODF.cpp ReadExperimental.cpp ReadNamenam.cpp \
     RotationMatrix.cpp SphericalTensor.cpp SpinMatrixBiradicals.cpp Version.cpp \
     VoitlanderIntegration.cpp VoitlanderTriangleIntegrals.cpp \
-    Wigner3jMy.cpp Wigner3jm.cpp kronrod.cpp main.cpp simError.cpp
+    Wigner3jMy.cpp kronrod.cpp main.cpp
 CCSRCS := faddeeva.cc
 FSRCS := NL2SOL1.for Nl2def1.for
 

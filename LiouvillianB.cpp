@@ -31,7 +31,6 @@
 
 // extern clock_t time_spin, time_diffusion, time_potential;
 
-using namespace MATPACK;
 #define MAX_BASIS 200000
 #define VERBOSE 1
 //extern double B0;

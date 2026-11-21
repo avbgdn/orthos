@@ -22,13 +22,10 @@
 
 #define LIOUVILLEMATRIXELEMENT_H
 
-#include "Wigner3jm.hpp"
 #include "BiradicalODF.h"
 #include "Eigen/Dense"
 #include "Eigen/Sparse"
 #include "SpinMatrixB.h"
-
-using namespace MATPACK;
 
 
 
