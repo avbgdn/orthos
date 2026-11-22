@@ -557,7 +557,7 @@ std::complex<double> MatrixElementIsotropicBrownianB_ND(BasisVectorB basisr, Bas
 			{
 				element=(R(0,0)+R(1,1))*0.5*(L1*(L1+1)-K1*K1)+R(2,2)*K1*K1;
 				// special case K1=1: the K=+1 and K=-1 functions are coupled by the dK=2 term, which adds to the diagonal element
-				if(K1==1)    // особый случай K1=-1, K2=1!
+				if(K1==1)    // special case K1=-1, K2=1!
 				{
 					if(basisr.L%2) element-=-jK1*Nm(L1, K2)*(R(0,0)-R(1,1))*0.25;
 					else		   element+=-jK1*Nm(L1, K2)*(R(0,0)-R(1,1))*0.25;
@@ -1169,7 +1169,7 @@ std::complex<double> MatrixElementIsotropicBrownianBSM_ND(BasisVectorB basisr, B
 			{
 				element=(R(0,0)+R(1,1))*0.5*(L1*(L1+1)-K1*K1)+R(2,2)*K1*K1;
 				// special case K1=1: the K=+1 and K=-1 functions are coupled by the dK=2 term, which adds to the diagonal element
-				if(K1==1)    // особый случай K1=-1, K2=1!
+				if(K1==1)    // special case K1=-1, K2=1!
 				{
 					if(basisr.L%2) element-=-jK1*Nm(L1, K2)*(R(0,0)-R(1,1))*0.25;
 					else		   element+=-jK1*Nm(L1, K2)*(R(0,0)-R(1,1))*0.25;

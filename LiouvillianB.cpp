@@ -64,9 +64,9 @@ extern int MpiRank, MpiSize;
 // number of the particle being calculated; set in CalculateLiouvillianB, used by BasisB.cpp in the names of the basis listing files
 int ParticleCount;
 
-// Важные замечания: 
-// 1. оператор AgL работает с величиной B0, изменённой в g_ср раз, чтобы корректно предсказывать центр поля.
-// 3. При расчёте матричных элементов (без симметрии) беру комплексное сопряжение от всех Fmu
+// Important notes: 
+// 1. the AgL operator works with the value of B0 changed by a factor of g_av (the mean g value), in order to predict the field centre correctly.
+// 3. When calculating the matrix elements (without symmetry), I take the complex conjugate of all Fmu
 
 
 // Pruning routine.

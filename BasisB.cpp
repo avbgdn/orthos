@@ -68,7 +68,7 @@ int LoadBasisB(char *filename, BasisVectorB *basis)
 	while(inputfile.getline(buffer, MAX_STRLEN))
 		if(!strcmp(buffer, "Vectors:") || !strcmp(buffer, "Vectors:\r"))
 		{
-			// начать считывать базисные векторы
+			// start reading the basis vectors
 			inputfile.getline(buffer, MAX_STRLEN);
 			// read one vector per line (13 integers) until the line beginning with Dimension or the end of the file
 			while (!inputfile.eof())
