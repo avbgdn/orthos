@@ -17,3 +17,8 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
+
+// This file is listed in the Makefile but contains no code, only the licence header above.
+// Reading and writing of the orientation distribution function (ODF) parameters is done by
+// OrderParameters::ReadFromFile and OrderParameters::WriteToFile in ODF.cpp.
+// Used by: nothing in this code base.

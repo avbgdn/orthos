@@ -32,6 +32,10 @@
 //    accurate once the refine test has made the triangle small enough that
 //    transition ordering has not changed between its three vertices.
 
+// Used by: IntegratedSpectrum.cpp (declares the three callbacks VoitlanderVertexEvalRigid, VoitlanderFreePayloadRigid and
+// VoitlanderTriangleIntegralRigid and passes them to IntegrateVoitlanderMesh()); the engine in VoitlanderIntegration.cpp
+// calls them only through function pointers. All other functions here are static helpers of VoitlanderTriangleIntegralRigid().
+
 #include "VoitlanderIntegration.h"
 #include <cmath>
 #include <algorithm>
@@ -43,6 +47,7 @@
 //    transition pairs plus the orientation-projected effective Gaussian and
 //    Lorentzian widths, exactly as CalculateTransitions/CalculateTransitionsM
 //    already compute them for the existing fixed-grid integration
+// Used by: VoitlanderVertexEvalRigid() (creates it), VoitlanderTriangleIntegralRigid() (reads it) and VoitlanderFreePayloadRigid() (deletes it).
 struct VoitlanderRigidPayload
 {
     double Position[MAX_TRANSITIONS];
@@ -56,11 +61,19 @@ struct VoitlanderRigidPayload
 //    Gauss-Kronrod grids already do; the generic refine-test proxy (Position,
 //    Width) is reduced from this to the intensity-weighted mean transition
 //    position and the narrowest of the two orientation-projected widths
+// Note: the Position proxy set by this function is the position of the single strongest transition (see the comment
+// inside the function), not the intensity-weighted mean named in the comment above.
+// Vertex->Teta and Vertex->Ksi are used as the Euler angles (0, Teta, Ksi) of the field-to-molecule rotation, as in the
+// fixed grid of IntegratedSpectrum.cpp.
+// Used by: CreateVertex() in VoitlanderIntegration.cpp, called through the function pointer VoitlanderVertexEval that
+// CalculateIntegratedSpectrumVoitlander() in IntegratedSpectrum.cpp passes to IntegrateVoitlanderMesh().
 void VoitlanderVertexEvalRigid(MagneticParameters *MagneticParameter, VoitlanderVertex *Vertex)
 {
+    // rotation matrix from the Euler angles of this vertex
     double eulerangles[3]={0, Vertex->Teta, Vertex->Ksi};
     Matrix<double, 3, 3> rotmat=RotationMatrix(eulerangles);
 
+    // get the transitions and widths from the biradical or monoradical routine and keep them in the payload (the monoradical's unused slots are zeroed)
     VoitlanderRigidPayload *payload=new VoitlanderRigidPayload;
     double hgausseff, hlorentzeff;
     if(!MagneticParameter->isMonoradical)
@@ -86,6 +99,7 @@ void VoitlanderVertexEvalRigid(MagneticParameters *MagneticParameter, Voitlander
             payload->Intensity[j]=0;
         }
     }
+    // keep the widths and the intensity cutoff in the payload and attach it to the vertex
     payload->HGaussEff=hgausseff;
     payload->HLorentzEff=hlorentzeff;
     payload->IntensityCutoff=MagneticParameter->TransitionIntensityCutoff;
@@ -128,6 +142,9 @@ void VoitlanderVertexEvalRigid(MagneticParameters *MagneticParameter, Voitlander
     Vertex->Width=std::max(1e-3, std::min(hgausswidth, hlorentzwidth));
 }
 
+// VoitlanderFreePayloadRigid: deletes the payload made by VoitlanderVertexEvalRigid().
+// Used by: IntegrateVoitlanderMesh() in VoitlanderIntegration.cpp, called through the function pointer
+// VoitlanderFreePayload for every vertex at the end of the integration.
 void VoitlanderFreePayloadRigid(void *Payload)
 {
     delete (VoitlanderRigidPayload*)Payload;
@@ -135,24 +152,29 @@ void VoitlanderFreePayloadRigid(void *Payload)
 
 // unit-area Gaussian absorption profile (not its derivative); FWHM convention
 //    HG=2*sqrt(2*ln2)*sigma, matching IndividualSpectrum.cpp
+// Used by: VoitlanderTriangleIntegralRigid(), passed as the Absorp function pointer to AnisotropicTriangleIntegral().
 static double GaussAbsorption(double Hrel, double HG, double HL)
 { return 2.0*sqrt(log(2.0)/PI)/HG*exp(-4.0*log(2.0)*Hrel*Hrel/(HG*HG)); }
 
 // antiderivative of GaussAbsorption: a rescaled error function, since
 //    d/dx[(1/2)(1+erf(ax))]=(a/sqrt(pi))*exp(-a^2 x^2) matches GaussAbsorption
 //    for a=2*sqrt(ln2)/HG
+// Used by: VoitlanderTriangleIntegralRigid(), passed as the CDF function pointer to AnisotropicTriangleIntegral().
 static double GaussCDF(double Hrel, double HG, double HL)
 { return 0.5*(1.0+erf(2.0*sqrt(log(2.0))*Hrel/HG)); }
 
 // unit-area Lorentzian absorption profile; FWHM convention HL=2*gamma
+// Used by: VoitlanderTriangleIntegralRigid(), passed as the Absorp function pointer to AnisotropicTriangleIntegral().
 static double LorentzAbsorption(double Hrel, double HG, double HL)
 { return (1.0/PI)*(HL/2.0)/(Hrel*Hrel+HL*HL/4.0); }
 
 // antiderivative of LorentzAbsorption: the pole decomposition
 //    1/(x^2+a^2)=(1/2ia)[1/(x-ia)-1/(x+ia)] integrates to an arctan
+// Used by: VoitlanderTriangleIntegralRigid(), passed as the CDF function pointer to AnisotropicTriangleIntegral().
 static double LorentzCDF(double Hrel, double HG, double HL)
 { return (1.0/PI)*atan(2.0*Hrel/HL)+0.5; }
 
+// type of the lineshape functions: value for the field offset Hrel and the Gaussian and Lorentzian widths HG and HL
 typedef double (*VoitlanderLineshapeFn)(double Hrel, double HG, double HL);
 
 // isotropic (zeroth-order) triangle contribution for one transition: the
@@ -161,6 +183,7 @@ typedef double (*VoitlanderLineshapeFn)(double Hrel, double HG, double HL);
 //    lineshape is just the lineshape evaluated once, times the triangle's true
 //    solid angle; this is the literal unified Task A/commit 39013f8 derivative
 //    function, reused unchanged (Gauss, Lorentz and Voigt alike)
+// Used by: VoitlanderTriangleIntegralRigid(), in all three lineshape regimes when the position span of the triangle is small.
 static double IsotropicContribution(double B, double Bbar, double HGbar, double HLbar, double Intensity, double SolidAngle, VoitlanderLineshapeFn Deriv)
 { return Intensity*SolidAngle*Deriv(B-Bbar, HGbar, HLbar); }
 
@@ -176,19 +199,25 @@ static double IsotropicContribution(double B, double Bbar, double HGbar, double 
 //    (equal endpoint position) and a near-zero gradient both reduce smoothly to
 //    the isotropic case above, which this function returns directly once the
 //    gradient is numerically negligible compared to the width.
+// B: field point; B1, B2, B3: resonance positions at the triangle corners; Deriv, Absorp, CDF: derivative lineshape,
+// absorption lineshape and its antiderivative; WidthScale: width used to judge whether the gradient is negligible.
+// Used by: VoitlanderTriangleIntegralRigid(), in the pure Lorentzian and pure Gaussian regimes.
 static double AnisotropicTriangleIntegral(double B, double B1, double B2, double B3, double HG, double HL, double WidthScale,
                                            VoitlanderLineshapeFn Deriv, VoitlanderLineshapeFn Absorp, VoitlanderLineshapeFn CDF)
 {
+    // gradient of the affine resonance position over the reference triangle and the mean position
     double gx=B2-B1, gy=B3-B1;
     double gsq=gx*gx+gy*gy;
     double Bbar=(B1+B2+B3)/3.0;
     if(gsq<1e-12*WidthScale*WidthScale) return 0.5*Deriv(B-Bbar, HG, HL);
 
+    // start and end position of each of the three edges
     double Bstart[3]={B1, B2, B3}, Bend[3]={B2, B3, B1};
 // g.n_edge for the three edges of the (0,0),(1,0),(0,1) reference triangle,
 // traversed counter-clockwise, with outward normal*length (dv,-du) per edge
     double gdotn[3]={B1-B3, B2+B3-2.0*B1, B1-B2};
 
+    // sum over the edges of the weighted line integral of the absorption lineshape, from the CDF difference over the position change (or the lineshape itself for a degenerate edge)
     double sum=0;
     for(int e=0; e<3; e++)
     {
@@ -206,10 +235,15 @@ static double AnisotropicTriangleIntegral(double B, double B1, double B2, double
 //    inside the triangle rather than on its edges, and the resonance position
 //    and both linewidth parameters are barycentrically interpolated to each
 //    node using that node's own weights, mirroring Spinach's nu/g/s construction
+// B: field point; B1, B2, B3: resonance positions at the corners; HG1..HG3, HL1..HL3: Gaussian and Lorentzian widths at the
+// corners; Intensity: mean intensity; SolidAngle: solid angle of the triangle.
+// Used by: VoitlanderTriangleIntegralRigid(), in the Voigt regime when the position span of the triangle is not small.
 static double AnisotropicVoigtCubature(double B, double B1, double B2, double B3, double HG1, double HG2, double HG3, double HL1, double HL2, double HL3, double Intensity, double SolidAngle)
 {
+    // barycentric weights of the three cubature nodes
     double lam[3][3]={{2.0/3.0, 1.0/6.0, 1.0/6.0}, {1.0/6.0, 2.0/3.0, 1.0/6.0}, {1.0/6.0, 1.0/6.0, 2.0/3.0}};
     double sum=0;
+    // sum the derivative Voigt lineshape over the three nodes
     for(int node=0; node<3; node++)
     {
 
@@ -229,27 +263,38 @@ static double AnisotropicVoigtCubature(double B, double B1, double B2, double B3
 //    HG<=0.001*HL / HL<=0.001*HG convention IndividualSpectrum.cpp already uses
 //    to pick Gauss/Lorentz/Voigt, plus a resonance-position-gradient check to
 //    pick isotropic vs anisotropic within the Gauss/Lorentz regimes
+// Contribution[0..NPoints-1] is overwritten with the contribution of the triangle with corners V1, V2, V3 at the
+// field points FieldNet.
+// Used by: RefineTriangle() in VoitlanderIntegration.cpp for every leaf triangle, called through the function pointer
+// VoitlanderTriangleIntegral that CalculateIntegratedSpectrumVoitlander() in IntegratedSpectrum.cpp passes to
+// IntegrateVoitlanderMesh().
 void VoitlanderTriangleIntegralRigid(VoitlanderVertex *V1, VoitlanderVertex *V2, VoitlanderVertex *V3,
                                       double SolidAngle, int NPoints, double *FieldNet, double *Contribution)
 {
+    // payloads of the three corner vertices
     VoitlanderRigidPayload *p1=(VoitlanderRigidPayload*)V1->Payload;
     VoitlanderRigidPayload *p2=(VoitlanderRigidPayload*)V2->Payload;
     VoitlanderRigidPayload *p3=(VoitlanderRigidPayload*)V3->Payload;
 
+    // clear the output
     for(int i=0; i<NPoints; i++) Contribution[i]=0;
 
+    // widths averaged over the three corners
     double HGbar=(p1->HGaussEff+p2->HGaussEff+p3->HGaussEff)/3.0;
     double HLbar=(p1->HLorentzEff+p2->HLorentzEff+p3->HLorentzEff)/3.0;
 
+    // loop over the transitions, one by one; a transition is skipped if its intensity is not above the cutoff at one of the corners
     for(int j=0; j<MAX_TRANSITIONS; j++)
     {
         if((p1->Intensity[j]<=p1->IntensityCutoff)||(p2->Intensity[j]<=p2->IntensityCutoff)||(p3->Intensity[j]<=p3->IntensityCutoff))
             continue;
 
+        // positions at the corners, mean intensity and position span of this transition over the triangle
         double B1=p1->Position[j], B2=p2->Position[j], B3=p3->Position[j];
         double intensitybar=(p1->Intensity[j]+p2->Intensity[j]+p3->Intensity[j])/3.0;
         double span=std::max(B1, std::max(B2, B3))-std::min(B1, std::min(B2, B3));
 
+        // loop over the field points: the width ratio selects the lineshape regime, the position span selects the isotropic or anisotropic form
         for(int i=0; i<NPoints; i++)
         {
             double B=FieldNet[i], value;

@@ -35,11 +35,18 @@
 //    future MOMD extension) down to this same pair of scalars without the
 //    engine ever inspecting Payload itself.
 
+// File purpose: contract between the generic mesh engine and the physics callbacks (see above).
+// Used by: included by VoitlanderIntegration.cpp (the engine), VoitlanderTriangleIntegrals.cpp (the rigid-limit
+// callbacks) and IntegratedSpectrum.cpp (which starts the integration).
+
 #ifndef VOITLANDERINTEGRATION_H
 #define VOITLANDERINTEGRATION_H
 
 #include "BiradicalODF.h"
 
+// VoitlanderVertex: record of one mesh vertex, an orientation (Teta, Ksi) with its cached physics.
+// Used by: VoitlanderIntegration.cpp (CreateVertex() fills Teta, Ksi and CurrentODF and stores the vertex);
+// VoitlanderTriangleIntegrals.cpp (VoitlanderVertexEvalRigid() fills the rest, VoitlanderTriangleIntegralRigid() reads it).
 struct VoitlanderVertex
 {
     double Teta, Ksi;                  // orientation Euler angles (polar, azimuthal)
@@ -50,21 +57,29 @@ struct VoitlanderVertex
 
 // evaluates one orientation and fills Vertex->Position, Vertex->Width and Vertex->Payload;
 //    Vertex->Teta, Vertex->Ksi and Vertex->CurrentODF are already set by the engine itself
+// Used by: implemented by VoitlanderVertexEvalRigid() in VoitlanderTriangleIntegrals.cpp; called through this function
+// pointer by CreateVertex() in VoitlanderIntegration.cpp, once for every new mesh vertex.
 typedef void (*VoitlanderVertexEval)(MagneticParameters *MagneticParameter, VoitlanderVertex *Vertex);
 
 // releases a Payload allocated by a VoitlanderVertexEval callback
+// Used by: implemented by VoitlanderFreePayloadRigid() in VoitlanderTriangleIntegrals.cpp; called through this function
+// pointer by IntegrateVoitlanderMesh() in VoitlanderIntegration.cpp for every vertex when the mesh is finished.
 typedef void (*VoitlanderFreePayload)(void *Payload);
 
 // overwrites Contribution[0..NPoints-1] with one leaf triangle's field-domain
 //    spectral contribution (ODF weighting and orientation-index bookkeeping are
 //    handled by the engine, not by this callback); SolidAngle is the triangle's
 //    true measure on the unit hemisphere, in steradians
+// Used by: implemented by VoitlanderTriangleIntegralRigid() in VoitlanderTriangleIntegrals.cpp; called through this function
+// pointer by RefineTriangle() in VoitlanderIntegration.cpp for every leaf triangle.
 typedef void (*VoitlanderTriangleIntegral)(VoitlanderVertex *V1, VoitlanderVertex *V2, VoitlanderVertex *V3,
                                             double SolidAngle, int NPoints, double *FieldNet, double *Contribution);
 
 // drives the generic hemisphere mesh/refine/vertex-cache engine to the requested
 //    accuracy using the injected VertexEval/TriangleIntegral pair, and adds the
 //    ODF-weighted result into SpectrumSum[0..ODF->NOrientations-1][0..NPoints-1]
+// Used by: CalculateIntegratedSpectrumVoitlander() in IntegratedSpectrum.cpp (the only caller); defined in
+// VoitlanderIntegration.cpp.
 void IntegrateVoitlanderMesh(MagneticParameters *MagneticParameter, OrderParameters *ODF,
                               VoitlanderVertexEval VertexEval, VoitlanderFreePayload FreePayload,
                               VoitlanderTriangleIntegral TriangleIntegral, double **SpectrumSum);

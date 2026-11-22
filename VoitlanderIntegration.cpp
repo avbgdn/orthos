@@ -28,6 +28,9 @@
 //    that case needs only a new VertexEval/TriangleIntegral pair, not a change
 //    to this file.
 
+// Used by: IntegratedSpectrum.cpp, whose CalculateIntegratedSpectrumVoitlander() calls the only entry point of this
+// file, IntegrateVoitlanderMesh(); all other functions here are static helpers of that function.
+
 #include "VoitlanderIntegration.h"
 #include <vector>
 #include <map>
@@ -41,6 +44,7 @@
 #endif
 
 extern int MpiRank, MpiSize;
+// MPI work-split helpers defined in Discrepancy.cpp
 int StartMPI(int Rank, int N, int P);
 int EndMPI(int Rank, int N, int P);
 
@@ -79,12 +83,14 @@ int EndMPI(int Rank, int N, int P);
 // one mesh vertex's 3-D Cartesian position on the unit hemisphere, kept
 //    separate from VoitlanderVertex (teta, ksi) because mesh construction
 //    (edge midpoints, solid angles) is far more robust in Cartesian coordinates
+// Used by: the vertex list and the helper functions of this file (CreateVertex, GetMidpoint, SolidAngle, RefineTriangle).
 struct VoitlanderXYZ { double x, y, z; };
 
 // bundles every piece of state the recursive mesh traversal needs, so the
 //    recursion itself can stay a small set of free functions instead of using
 //    file-scope globals (which would not be safe to call back into for more
 //    than one particle, or if a future caller ever nested two integrations)
+// Used by: every function in this file; one instance is created in IntegrateVoitlanderMesh() and passed down by pointer.
 struct VoitlanderMeshContext
 {
     MagneticParameters *MagneticParameter;
@@ -105,8 +111,10 @@ struct VoitlanderMeshContext
 // normalises a Cartesian direction to the unit hemisphere and evaluates its
 //    physics once; the returned index is then cached by every caller (the seed
 //    construction and GetMidpoint) so this orientation is never evaluated twice
+// Used by: BuildHemisphereSeed() (the pole, the upper ring and the equator ring) and GetMidpoint() (edge midpoints).
 static int CreateVertex(VoitlanderMeshContext *Context, double x, double y, double z)
 {
+    // project the direction onto the unit sphere and get its polar angle Teta and azimuth Ksi (in [0,2*PI))
     double norm=sqrt(x*x+y*y+z*z);
     x/=norm; y/=norm; z/=norm;
 
@@ -123,6 +131,7 @@ static int CreateVertex(VoitlanderMeshContext *Context, double x, double y, doub
     // method-specific physics evaluation, filling Position, Width and Payload
     Context->VertexEval(Context->MagneticParameter, &vertex);
 
+    // store the vertex and its Cartesian position, the index in the two lists identifies the vertex
     Context->Vertices.push_back(vertex);
     VoitlanderXYZ xyz; xyz.x=x; xyz.y=y; xyz.z=z;
     Context->XYZ.push_back(xyz);
@@ -147,12 +156,15 @@ static int CreateVertex(VoitlanderMeshContext *Context, double x, double y, doub
 // returns the cached midpoint vertex of edge (IndexA,IndexB), creating and
 //    evaluating it only the first time this edge is split by any triangle at
 //    any subdivision level -- this is the vertex cache the brief asks for
+// Used by: RefineTriangle() (for the three edges of each triangle that is split).
 static int GetMidpoint(VoitlanderMeshContext *Context, int IndexA, int IndexB)
 {
+    // look the edge up in the cache, the key is the ordered pair of vertex indices
     std::pair<int, int> key(std::min(IndexA, IndexB), std::max(IndexA, IndexB));
     std::map<std::pair<int, int>, int>::iterator found=Context->MidpointCache.find(key);
     if(found!=Context->MidpointCache.end()) return found->second;
 
+    // not cached yet: create the vertex at the midpoint of the edge and remember it
     VoitlanderXYZ a=Context->XYZ[IndexA], b=Context->XYZ[IndexB];
     int midpoint=CreateVertex(Context, a.x+b.x, a.y+b.y, a.z+b.z);
     Context->MidpointCache[key]=midpoint;
@@ -161,6 +173,7 @@ static int GetMidpoint(VoitlanderMeshContext *Context, int IndexA, int IndexB)
 
 // true solid angle of the spherical triangle with unit-vector corners A, B, C,
 //    via the Van Oosterom-Strackee formula tan(Omega/2)=|a.(bxc)|/(1+a.b+b.c+c.a)
+// Used by: RefineTriangle() (for every leaf triangle).
 static double SolidAngle(VoitlanderXYZ A, VoitlanderXYZ B, VoitlanderXYZ C)
 {
     double triple=A.x*(B.y*C.z-B.z*C.y)-A.y*(B.x*C.z-B.z*C.x)+A.z*(B.x*C.y-B.y*C.x);
@@ -176,8 +189,10 @@ static double SolidAngle(VoitlanderXYZ A, VoitlanderXYZ B, VoitlanderXYZ C)
 //    times the narrowest of their three linewidths, i.e. while the affine
 //    (first-order) model the per-triangle integral relies on has not yet been
 //    resolved down to a small fraction of a linewidth
+// Used by: RefineTriangle() (decides whether a triangle is split or integrated).
 static bool NeedsRefine(VoitlanderMeshContext *Context, int IndexA, int IndexB, int IndexC)
 {
+    // resonance positions and linewidths at the three corners, with the position span and the narrowest width
     double posA=Context->Vertices[IndexA].Position, posB=Context->Vertices[IndexB].Position, posC=Context->Vertices[IndexC].Position;
     double widA=Context->Vertices[IndexA].Width, widB=Context->Vertices[IndexB].Width, widC=Context->Vertices[IndexC].Width;
     double span=std::max(posA, std::max(posB, posC))-std::min(posA, std::min(posB, posC));
@@ -196,8 +211,11 @@ static bool NeedsRefine(VoitlanderMeshContext *Context, int IndexA, int IndexB, 
 //    the depth cap is hit), calls the injected per-triangle integral once and
 //    folds its result into SpectrumSum with this triangle's ODF weight, taken
 //    as the plain average of the three vertices' cached CurrentODF
+// Used by: IntegrateVoitlanderMesh() (once for each seed triangle of this MPI rank, depth 0) and by RefineTriangle()
+// itself (the four sub-triangles, depth+1).
 static void RefineTriangle(VoitlanderMeshContext *Context, int IndexA, int IndexB, int IndexC, int Depth)
 {
+    // split into four triangles using the edge midpoints and refine each of them
     if(Depth<VOITLANDER_MAX_DEPTH && NeedsRefine(Context, IndexA, IndexB, IndexC))
     {
         int midAB=GetMidpoint(Context, IndexA, IndexB);
@@ -210,6 +228,7 @@ static void RefineTriangle(VoitlanderMeshContext *Context, int IndexA, int Index
         return;
     }
 
+    // leaf triangle: update the mesh statistics and get the spectral contribution of the triangle from the injected integral
     if(Depth>Context->MaxDepthReached) Context->MaxDepthReached=Depth;
     Context->LeafTriangleCount++;
 
@@ -217,6 +236,7 @@ static void RefineTriangle(VoitlanderMeshContext *Context, int IndexA, int Index
     VoitlanderVertex *va=&Context->Vertices[IndexA], *vb=&Context->Vertices[IndexB], *vc=&Context->Vertices[IndexC];
     Context->TriangleIntegral(va, vb, vc, solidangle, Context->NPoints, Context->FieldNet, Context->Scratch);
 
+    // add the contribution to the spectrum of each sample orientation, weighted by the mean ODF of the corners
     for(int k=0; k<Context->ODF->NOrientations; k++)
     {
         double odfweight=(va->CurrentODF[k]+vb->CurrentODF[k]+vc->CurrentODF[k])/3.0;
@@ -243,8 +263,10 @@ static void RefineTriangle(VoitlanderMeshContext *Context, int IndexA, int Index
 //    orientations, leaving the other 5 band gores entirely outside the mesh
 //    (solid-angle sum 4.752 sr instead of the hemisphere's 2*pi=6.283 sr, a
 //    24% silently unintegrated region) -- found and fixed 2026-11-03
+// Used by: IntegrateVoitlanderMesh() (once, to get the 15 level-0 triangles).
 static void BuildHemisphereSeed(VoitlanderMeshContext *Context, int SeedTriangleA[15], int SeedTriangleB[15], int SeedTriangleC[15])
 {
+    // pole vertex and the ring of 5 vertices at polar angle atan(2)
     int pole=CreateVertex(Context, 0, 0, 1);
     int upper[5], equator[5];
     double theta1=atan(2.0);
@@ -253,12 +275,14 @@ static void BuildHemisphereSeed(VoitlanderMeshContext *Context, int SeedTriangle
         double ksi=i*2.0*PI/5.0;
         upper[i]=CreateVertex(Context, sin(theta1)*cos(ksi), sin(theta1)*sin(ksi), cos(theta1));
     }
+    // ring of 5 vertices on the equator, shifted by 36 degrees in azimuth against the upper ring
     for(int i=0; i<5; i++)
     {
         double ksi=i*2.0*PI/5.0+PI/5.0;
         equator[i]=CreateVertex(Context, cos(ksi), sin(ksi), 0);
     }
 
+    // the 15 seed triangles: for each azimuth step one polar cap triangle and two equatorial band triangles
     for(int i=0; i<5; i++)
     {
         int next=(i+1)%5;
@@ -268,10 +292,17 @@ static void BuildHemisphereSeed(VoitlanderMeshContext *Context, int SeedTriangle
     }
 }
 
+// IntegrateVoitlanderMesh: orientation average over the upper hemisphere by adaptive triangulation: it builds the
+// 15-triangle seed mesh, refines the triangles of this MPI rank until the refine test is satisfied, and lets the
+// injected callbacks give the spectral contribution of every leaf triangle; the ODF-weighted raw solid-angle
+// integral is added to SpectrumSum[k][i] (k: sample orientation, i: field point), and mesh statistics are written to
+// the file voitlander<particle>.out by rank 0.
+// Used by: CalculateIntegratedSpectrumVoitlander() in IntegratedSpectrum.cpp (the only caller).
 void IntegrateVoitlanderMesh(MagneticParameters *MagneticParameter, OrderParameters *ODF,
                               VoitlanderVertexEval VertexEval, VoitlanderFreePayload FreePayload,
                               VoitlanderTriangleIntegral TriangleIntegral, double **SpectrumSum)
 {
+    // set up the mesh context with the particle data, the callbacks and the output array
     VoitlanderMeshContext context;
     context.MagneticParameter=MagneticParameter;
     context.ODF=ODF;
@@ -284,6 +315,7 @@ void IntegrateVoitlanderMesh(MagneticParameters *MagneticParameter, OrderParamet
     context.LeafTriangleCount=0;
     context.MaxDepthReached=0;
 
+    // build the 15 level-0 hemisphere triangles
     int seedA[15], seedB[15], seedC[15];
     BuildHemisphereSeed(&context, seedA, seedB, seedC);
 
@@ -296,6 +328,7 @@ void IntegrateVoitlanderMesh(MagneticParameters *MagneticParameter, OrderParamet
 #else
     int firstseed=0, lastseed=15;
 #endif
+    // refine the seed triangles of this rank, the leaf triangles accumulate into SpectrumSum
     for(int tri=firstseed; tri<lastseed; tri++)
         RefineTriangle(&context, seedA[tri], seedB[tri], seedC[tri], 0);
 
@@ -306,6 +339,7 @@ void IntegrateVoitlanderMesh(MagneticParameters *MagneticParameter, OrderParamet
 //    exactly once, so reducing it again here double-counted every contribution
 //    by a factor of MpiSize (found and fixed 2026-11-03, see commit message)
 #ifdef __MPI
+    // combine the leaf count and the depth over all ranks for the statistics output
     long totalleaves=context.LeafTriangleCount; int maxdepth=context.MaxDepthReached;
     MPI_Allreduce(MPI_IN_PLACE, &totalleaves, 1, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &maxdepth, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
@@ -325,6 +359,7 @@ void IntegrateVoitlanderMesh(MagneticParameters *MagneticParameter, OrderParamet
         statfile.close();
     }
 
+    // release the cached payloads of all vertices and the scratch array
     for(size_t v=0; v<context.Vertices.size(); v++)
         FreePayload(context.Vertices[v].Payload);
     delete[] context.Scratch;

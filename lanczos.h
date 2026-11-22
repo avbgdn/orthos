@@ -18,18 +18,26 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+// File purpose: declarations of the Lanczos tridiagonalisation Lanczos() and the continued-fraction lineshape CFVD(),
+// both defined in Lanczos.cpp.
+// Used by: included by Lanczos.cpp and LiouvillianB.cpp.
+
 #ifndef LANCZOS_H
 
 #define LANCZOS_H
 
 //#include "unsupported/Eigen/SparseExtra"
 
+// Declaration of Lanczos(); description and call sites are given above its definition in Lanczos.cpp
+// (the only caller is CalculateLiouvillianB() in LiouvillianB.cpp)
 Matrix<std::complex<double>, Dynamic, 2> Lanczos(SparseMatrix<std::complex<double> > &Z,
 												 const Matrix<std::complex<double>, Dynamic, 1> &x,
 												 int nstep, int ndim,
 												 MagneticParameters* MagneticParameter,
 												 int &ActualSteps);
 
+// Declaration of CFVD(); description and call sites are given above its definition in Lanczos.cpp
+// (the only caller is CalculateLiouvillianB() in LiouvillianB.cpp)
 Matrix<double, Dynamic, 2> CFVD(Matrix<std::complex<double>, Dynamic, 2> ab, int ndim, double z0, int npoints, double w0, MagneticParameters* MagneticParameter);
 
 

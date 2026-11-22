@@ -18,11 +18,31 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+// Reading, writing and preparing the magnetic parameters of one paramagnetic particle. This file implements the
+// methods of class MagneticParameters (declared in BiradicalODF.h): parsing of one Particle: section of the magnetic
+// input file, output of the parameters, conversion of angles between degrees and radians, conversion between the
+// physical parameters and the argument vector of the optimiser (Par2Arg, Arg2Par), rotation of the interaction
+// tensors into the molecular frame, quasi-librations, the conformer rate matrix and the field net.
+// Used by: main.cpp (ReadFromFile, GenerateFieldNet, Par2Arg, angle conversion, WriteToFile), Discrepancy.cpp
+// (Arg2Par, RotateTensors, QuasiLibrations, CalculateTranstionRateMatrix, angle conversion, WriteToFile),
+// ReadExperimental.cpp (WriteToFileBrief) and ODF.cpp (NextArg). The members filled here are read by the
+// spectrum calculation (LiouvillianB.cpp, IntegratedSpectrum.cpp, Discrepancy.cpp and others) through BiradicalODF.h.
+
 #include "BiradicalODF.h"
 #include <math.h>
 
 // Reading/writing magnetic parameters file
 
+// Reads the parameters of this particle (number Count) from the magnetic input file. The file holds one section per
+// particle, started by a line Particle: N. The first loop skips to the section with N equal to Count, the second loop
+// parses the lines Keyword: values of that section until the section of another particle starts. Most keywords carry
+// pairs of a value and a variate flag (VF): the flag tells Par2Arg whether the value is fixed (0), fitted (1 or 2)
+// or tied to another parameter (3 and above, see Arg2Par). Angles are read in degrees; main() converts them to
+// radians after reading. Liouville is set to true (slow-motion calculation with the stochastic Liouville equation)
+// when any rotational diffusion rate Rx, Ry, Rz is positive, otherwise the rigid-limit calculation is used.
+// Input: filename, the magnetic input file. Outputs: the members of this object; the program exits if the file
+// cannot be opened or NPoints is negative.
+// Used by: main() in main.cpp, once for each particle.
 void MagneticParameters::ReadFromFile(char* filename)
 {
 // Default values of rotation parameters: for
@@ -53,6 +73,7 @@ void MagneticParameters::ReadFromFile(char* filename)
 		RTau[0]=0.0;
 		RTau[0]=0.0;
 
+		// Allocate the conformer conversion-rate matrix, set all rates to zero and mark them as not varied
 		ConversionRateR=(double*)malloc(MAX_PARTICLES*MAX_PARTICLES*sizeof(double));
 
 		for(int i=0; i<MAX_PARTICLES; i++)
@@ -63,14 +84,17 @@ void MagneticParameters::ReadFromFile(char* filename)
 				ConversionRateVF[i][j]=0;
 				ConversionRateNArg[i][j]=-1;
 			}
+		// By default a particle is a conformer group of its own
 		ConformerGroup=Count;
 		NConformers=1;
 		ConformerGroupMembers[0]=Count;
 
+		// Defaults for the basis truncation limits, pruning and the number of Lanczos steps
 		LOmax=0; LEmax=0; Mmax=0; Kmax=0; Nmax=0;
 		NPrune=0; dHPrune=64.0; PruningTolerance=1.0e-3;
 		LanczosSteps=500;
 //
+	// Defaults: no hyperfine nuclei, no zero-field splitting, no exchange and no mean-field potential
 	HyperfineCount=0;
 	 
 	ZFS_E=0; ZFS_Angle=0;
@@ -80,6 +104,7 @@ void MagneticParameters::ReadFromFile(char* filename)
 
     MFPotential.Lmax=0;
 
+	// Open the magnetic input file; stop if it cannot be opened
 	ifstream magnetic_par;
 	magnetic_par.open (filename, ios::in);
 	if(!magnetic_par.is_open())
@@ -87,6 +112,7 @@ void MagneticParameters::ReadFromFile(char* filename)
 		std::cout << "Could not open file " << filename << std::endl;
 		exit(0);
 	}
+	// First pass: skip to the section Particle: Count, setting the default optimiser parameters on the way
 	while (!magnetic_par.eof())
 	{
 		char buffer[MAX_STRLEN], buffer2[MAX_STRLEN], buffer3[MAX_STRLEN];
@@ -105,20 +131,25 @@ void MagneticParameters::ReadFromFile(char* filename)
 			if(npart==Count) break;
 		}
 	}
+	// Defaults for the switches and the integration method that the section may change
 	isMonoradical=false;
 	IntegrationMethod=INTEGRATE_GAUSSKRONROD;
 	AmplitudeNormalized=false;
 
+	// Second pass: read the keyword lines of this particle until the section of another particle starts
 	while (!magnetic_par.eof())
 	{
 		char buffer[MAX_STRLEN], buffer2[MAX_STRLEN], buffer3[MAX_STRLEN];
 
 		magnetic_par.getline(buffer, MAX_STRLEN);
 		if( sscanf(buffer, "%s", buffer2)==-1) continue;
+		// Keyword Monoradical: a single electron spin, without second spin, dipolar, exchange and ZFS terms
 		if (!strcmp(buffer2, "Monoradical"))
 		{
 			isMonoradical=true;
 		}
+		// Principal values of the g1, g2, A1 and A2 tensors and of the Gaussian and Lorentzian line-width tensors
+		// (FWHM in Gauss), each followed by its variate flag
 		if (!strcmp(buffer2, "g1Tensor:"))
 		{
 			double a, b, c;
@@ -191,6 +222,7 @@ void MagneticParameters::ReadFromFile(char* filename)
 			    	    0, j, 0,
 						0, 0, k;
 		}
+		// Euler angles (degrees in the file) that orient the principal axes of each tensor, as pairs of value and flag
 		if (!strcmp(buffer2, "g1Euler:"))
 		{
 			sscanf(buffer, "%s %lf %d %lf %d %lf %d", buffer3, 
@@ -233,6 +265,7 @@ void MagneticParameters::ReadFromFile(char* filename)
 													&(HLorentzEuler[1]), &(HLorentzEulerVF[1]), 
 													&(HLorentzEuler[2]), &(HLorentzEulerVF[2]));
 		}
+		// Dipolar vector between the two electron spins, which defines the dipole-dipole tensor
 		if (!strcmp(buffer2, "Dipolar_vector:"))
 		{
 			sscanf(buffer, "%s %lf %d %lf %d %lf %d", buffer3, 
@@ -241,6 +274,7 @@ void MagneticParameters::ReadFromFile(char* filename)
 													&(dz), &(dzVF));
 		}
 
+		// Zero-field splitting: parameter E of its non-axial part and the angle ZFS_Angle
 		if (!strcmp(buffer2, "ZFS:"))
 		{
 			sscanf(buffer, "%s %lf %d %lf %d", buffer3, 
@@ -248,6 +282,8 @@ void MagneticParameters::ReadFromFile(char* filename)
 													&(ZFS_Angle), &(ZFS_AngleVF));
 		}
 
+		// Quasi-libration amplitudes about three axes and Euler angles of the libration frame (used by QuasiLibrations);
+		// LibDistrWidth and LibDistrNSites are read and written here but are not used by QuasiLibrations
 		if (!strcmp(buffer2, "Libration:"))
 		{
 			sscanf(buffer, "%s %lf %d %lf %d %lf %d", buffer3, 
@@ -276,6 +312,7 @@ void MagneticParameters::ReadFromFile(char* filename)
 		}
 
 
+		// Rotational diffusion rates Rx, Ry, Rz (1/s, converted to Gauss units in RotateTensors) and their axes
 		if (!strcmp(buffer2, "Diffusion:"))
 		{
 			sscanf(buffer, "%s %lf %d %lf %d %lf %d", buffer3, 
@@ -291,6 +328,7 @@ void MagneticParameters::ReadFromFile(char* filename)
 													&(DiffusionEuler[2]), &(DiffusionEulerVF[2]));
 		}
 
+		// Diffusion type of each principal axis; a value other than 0, 0.5 or 1 is replaced by 0 (Brownian diffusion)
 		if (!strcmp(buffer2, "DiffusionType:"))
 		{
 			sscanf(buffer, "%s %lf %lf %lf", buffer3, 
@@ -308,6 +346,7 @@ void MagneticParameters::ReadFromFile(char* filename)
 			}
 		  }
 		}
+		// Residence times RTau of the jump-diffusion model, one for each axis
 		if (!strcmp(buffer2, "RTau:"))
 		{
 			sscanf(buffer, "%s %lf %d %lf %d %lf %d", buffer3, 
@@ -317,6 +356,7 @@ void MagneticParameters::ReadFromFile(char* filename)
 		}
 
 
+		// Mean-field orientational potential: lines of L, K, value and flag up to a blank line; Potential: no means none
 		if (!strcmp(buffer2, "Potential:"))
 		{
 			char buffer4[MAX_STRLEN];
@@ -336,6 +376,7 @@ void MagneticParameters::ReadFromFile(char* filename)
 
 		}
 
+		// Integration net (theta and phi points) for the potential
 		if (!strcmp(buffer2, "NetPotential:"))
 		{
 			sscanf(buffer, "%s %d %d", buffer3, 
@@ -343,18 +384,21 @@ void MagneticParameters::ReadFromFile(char* filename)
 		}
 
 
+		// Basis truncation limits LE, LO, K, M, N (used by GenerateBasisB and GenerateBasisM)
 		if (!strcmp(buffer2, "Truncation:"))
 		{
 			sscanf(buffer, "%s %d %d %d %d %d", buffer3, 
 													&(LEmax), &(LOmax), 
 													&(Kmax), &(Mmax), &(Nmax));
 		}
+		// Basis pruning settings: NPrune, dHPrune and PruningTolerance
 		if (!strcmp(buffer2, "Pruning:"))
 		{
 			sscanf(buffer, "%s %d %lf %lf ", buffer3, 
 													&(NPrune), &(dHPrune), 
 													&(PruningTolerance));
 		}
+		// One discrete-jump axis per line: axis angles fi and teta, jump angle and jump frequency, each with a flag
 		if (!strcmp(buffer2, "Jumps:"))
 		{
 			if(NJumpAxes==MAX_JUMPS)
@@ -371,12 +415,14 @@ void MagneticParameters::ReadFromFile(char* filename)
 				NJumpAxes++;
 			}
 		}
+		// Number of Lanczos steps
 		if (!strcmp(buffer2, "LanczosSteps:"))
 		{
 			sscanf(buffer, "%s %d ", buffer3, &LanczosSteps);
 		}
 
 
+		// Exchange parameters J0, J2 and JDiffusion; a negative J0 is stored as its modulus with the sign kept in J0sign
 		if (!strcmp(buffer2, "Exchange:"))
 		{
 			sscanf(buffer, "%s %lf %d %lf %d %lf %d", buffer3, 
@@ -391,6 +437,7 @@ void MagneticParameters::ReadFromFile(char* filename)
 		}	
 
 
+		// Isotropic hyperfine nuclei: lines of nucleus name, number of equivalent nuclei, constant and flag up to a blank line
 		if (!strcmp(buffer2, "Hyperfine:"))
 		{
 			char buffer4[MAX_STRLEN];
@@ -416,16 +463,20 @@ void MagneticParameters::ReadFromFile(char* filename)
 		}
 
 
+		// Centre field of the spectrum, and the field shift Shift with its variate flag
 		if (!strcmp(buffer2, "FCenter:"))
 		{
 			sscanf(buffer, "%s %lf %lf %d ", buffer3, 
 											&CenterField0, &(Shift), &(ShiftVF));
 		}	
+		// Overall amplitude factor of the spectrum of this particle
 		if (!strcmp(buffer2, "Amplitude:"))
 		{
 			sscanf(buffer, "%s %lf %d ", buffer3, 
 											&(AmplitudeFactor), &(AmplitudeFactorVF));
 		}
+
+		// Field net: number of points and field step DeltaH in Gauss
 		if (!strcmp(buffer2, "NPoints:"))
 		{
 			sscanf(buffer, "%s %d ", buffer3, &NPoints);
@@ -439,6 +490,7 @@ void MagneticParameters::ReadFromFile(char* filename)
 		{
 			sscanf(buffer, "%s %lf ", buffer3, &fs);
 		}
+		// Orientation integration: size of the grid and the method (Gauss, Gauss-Kronrod or Voitlander)
 		if (!strcmp(buffer2, "Integration_Net:"))
 		{
 			sscanf(buffer, "%s %d ", buffer3, &IntegrationNet);
@@ -458,6 +510,7 @@ void MagneticParameters::ReadFromFile(char* filename)
 		{
 			IntegrationMethod=INTEGRATE_VOITLANDER;
 		}
+		// Normalise the calculated spectrum by its peak-to-peak amplitude (applied in Discrepancy)
 		if (!strcmp(buffer2, "AmplitudeNormalized"))
 		{
 			AmplitudeNormalized=true;
@@ -465,10 +518,12 @@ void MagneticParameters::ReadFromFile(char* filename)
 		}
 
 
+		// Intensity cutoff handed to the rigid-limit spectrum routines (CalculateIndividualSpectrum)
 		if (!strcmp(buffer2, "TransitionCutoff:"))
 		{
 			sscanf(buffer, "%s %lf ", buffer3, &TransitionIntensityCutoff);
 		}
+		// Optimiser settings: algorithm name, tolerances XTol and FTol, and initial step
 		if (!strcmp(buffer2, "Algorithm:"))
 		{
 			sscanf(buffer, "%s %s ", buffer3, NLOptAlgorithm);
@@ -486,11 +541,13 @@ void MagneticParameters::ReadFromFile(char* filename)
 			sscanf(buffer, "%s %lf ", buffer3, &InitialStep);
 		}		
 
+		// Number of the conformer group to which this particle belongs
 		if (!strcmp(buffer2, "ConformerGroup:"))
 		{
 			sscanf(buffer, "%s %d ", buffer3, &ConformerGroup);
 		}
 
+		// Conversion rates between conformers: lines of i, j, value and flag (i<j) up to a blank line
 		if (!strcmp(buffer2, "ConversionRate:"))
 		{
 			while(magnetic_par.getline(buffer3, MAX_STRLEN))
@@ -515,6 +572,7 @@ void MagneticParameters::ReadFromFile(char* filename)
 		}
 
 
+		// The header of another particle ends the section of this particle
 		if (!strcmp(buffer2, "Particle:"))
 		{
 			int npart;
@@ -522,6 +580,7 @@ void MagneticParameters::ReadFromFile(char* filename)
 			if(npart!=Count) break;
 		}
 
+		// The slow-motion (stochastic Liouville) calculation is used if any rotational diffusion rate is positive
 		if((Rx>0)||(Ry>0)||(Rz>0))	Liouville=true;
 		else						Liouville=false;
 
@@ -530,8 +589,13 @@ void MagneticParameters::ReadFromFile(char* filename)
 
 }
 
+// Converts all angles stored in this object from radians to degrees: Euler angles of the g, A, Gaussian, Lorentzian
+// and diffusion tensors, libration amplitudes, frame angles and distribution widths, discrete-jump angles and the ZFS
+// angle. The parameter files use degrees, the calculation itself uses radians.
+// Used by: Discrepancy() in Discrepancy.cpp and main() in main.cpp, immediately before the parameters are written.
 void MagneticParameters::ConvertAnglesToDegrees(void)
 {
+		// Euler angles of the g, A, line-width and diffusion tensors
 		g1Euler[0]/=PI/180;
 		g1Euler[1]/=PI/180;
 		g1Euler[2]/=PI/180;
@@ -560,6 +624,7 @@ void MagneticParameters::ConvertAnglesToDegrees(void)
 		DiffusionEuler[1]/=PI/180;
 		DiffusionEuler[2]/=PI/180;
 
+		// Libration amplitudes, Euler angles of the libration frame and distribution widths
 		LibrationAmplitude[0]/=PI/180;
 		LibrationAmplitude[1]/=PI/180;
 		LibrationAmplitude[2]/=PI/180;
@@ -572,6 +637,7 @@ void MagneticParameters::ConvertAnglesToDegrees(void)
 		LibDistrWidth[1]/=PI/180;
 		LibDistrWidth[2]/=PI/180;
 
+		// Axis angles and jump angles of the discrete jumps
 		for(int i=0; i<NJumpAxes; i++)
 		{
 			JumpAxisFi[i]/=PI/180;
@@ -579,12 +645,17 @@ void MagneticParameters::ConvertAnglesToDegrees(void)
 			JumpAngle[i]/=PI/180;
 		}
 
+		// Angle of the zero-field splitting tensor
 		ZFS_Angle/=PI/180;
 
 }
 
+// Converts all angles stored in this object from degrees to radians (the inverse of ConvertAnglesToDegrees).
+// Used by: main() in main.cpp (after reading the input files and again after writing the final output) and
+// Discrepancy() in Discrepancy.cpp (after writing the temporary parameter files).
 void MagneticParameters::ConvertAnglesToRadians(void)
 {
+		// Euler angles of the g, A, line-width and diffusion tensors
 		g1Euler[0]*=PI/180;
 		g1Euler[1]*=PI/180;
 		g1Euler[2]*=PI/180;
@@ -613,6 +684,7 @@ void MagneticParameters::ConvertAnglesToRadians(void)
 		DiffusionEuler[1]*=PI/180;
 		DiffusionEuler[2]*=PI/180;
 
+		// Libration amplitudes, Euler angles of the libration frame and distribution widths
 		LibrationAmplitude[0]*=PI/180;
 		LibrationAmplitude[1]*=PI/180;
 		LibrationAmplitude[2]*=PI/180;
@@ -625,6 +697,7 @@ void MagneticParameters::ConvertAnglesToRadians(void)
 		LibDistrWidth[1]*=PI/180;
 		LibDistrWidth[2]*=PI/180;
 
+		// Axis angles and jump angles of the discrete jumps
 		for(int i=0; i<NJumpAxes; i++)
 		{
 			JumpAxisFi[i]*=PI/180;
@@ -632,17 +705,25 @@ void MagneticParameters::ConvertAnglesToRadians(void)
 			JumpAngle[i]*=PI/180;
 		}
 		
+		// Angle of the zero-field splitting tensor
 		ZFS_Angle*=PI/180;
 
 }
+// Appends the full parameter listing of this particle to a file, as Keyword: value lines in the style of the magnetic
+// input file. Angles are written as currently stored (degrees when called after ConvertAnglesToDegrees). The file is opened in append mode, so the sections of successive particles follow
+// each other. Input: filename, the file to append to.
+// Used by: main() in main.cpp (final output, to the output magnetic file) and Discrepancy() in Discrepancy.cpp
+// (to the file Magnetic.temp after a calculation).
 void MagneticParameters::WriteToFile(char* filename)
 {
 		FILE *file;
+		// Open in append mode and write the particle number, the monoradical flag and the conformer group
 		file=fopen(filename, "a+");
 		fprintf(file, "\nParticle: %d\n", Count);
 		if (isMonoradical)
 			fprintf(file, "Monoradical\n");
 		fprintf(file, "ConformerGroup: %d\n", ConformerGroup);
+		// Conformer conversion rates, only for more than one conformer
 		if(NConformers>1)
 		{
 			fprintf(file, "ConversionRate:\n");
@@ -654,6 +735,7 @@ void MagneticParameters::WriteToFile(char* filename)
 		}
 		
 
+		// Principal values, variate flags and Euler angles of the g and hyperfine tensors
 		fprintf(file, "g1Tensor:         %10.6lf    %d    %10.6lf    %d    %10.6lf    %d    \n", g1(0, 0), g1VF(0, 0), g1(1, 1), g1VF(1, 1), g1(2, 2), g1VF(2, 2));
 		fprintf(file, "g1Euler:          %+10.6lf    %d    %+10.6lf    %d    %+10.6lf    %d    \n", g1Euler[0], g1EulerVF[0], g1Euler[1], g1EulerVF[1], g1Euler[2], g1EulerVF[2]);
 
@@ -666,33 +748,39 @@ void MagneticParameters::WriteToFile(char* filename)
 		fprintf(file, "A2Tensor:         %10.6lf    %d    %10.6lf    %d    %10.6lf    %d    \n", A2(0, 0), A2VF(0, 0), A2(1, 1), A2VF(1, 1), A2(2, 2), A2VF(2, 2));
 		fprintf(file, "A2Euler:          %+10.6lf    %d    %+10.6lf    %d    %+10.6lf    %d    \n\n", A2Euler[0], A2EulerVF[0], A2Euler[1], A2EulerVF[1], A2Euler[2], A2EulerVF[2]);
 
+		// Gaussian and Lorentzian line widths (FWHM in Gauss) with their Euler angles
 		fprintf(file, "GaussTensor:      %10.6lf    %d    %10.6lf    %d    %10.6lf    %d     // FWHM in Gauss \n", HGauss(0, 0), HGaussVF(0, 0), HGauss(1, 1), HGaussVF(1, 1), HGauss(2, 2), HGaussVF(2, 2));
 		fprintf(file, "GaussEuler:       %+10.6lf    %d    %+10.6lf    %d    %+10.6lf    %d    \n", HGaussEuler[0], HGaussEulerVF[0], HGaussEuler[1], HGaussEulerVF[1], HGaussEuler[2], HGaussEulerVF[2]);
 
 		fprintf(file, "LorentzTensor:    %10.6lf    %d    %10.6lf    %d    %10.6lf    %d     // FWHM in Gauss \n", HLorentz(0, 0), HLorentzVF(0, 0), HLorentz(1, 1), HLorentzVF(1, 1), HLorentz(2, 2), HLorentzVF(2, 2));
 		fprintf(file, "LorentzEuler:     %+10.6lf    %d    %+10.6lf    %d    %+10.6lf    %d    \n\n", HLorentzEuler[0], HLorentzEulerVF[0], HLorentzEuler[1], HLorentzEulerVF[1], HLorentzEuler[2], HLorentzEulerVF[2]);
 
+		// Dipolar vector, zero-field splitting and exchange parameters
 		fprintf(file, "Dipolar_vector:   %10.6lf    %d    %10.6lf    %d    %10.6lf    %d    \n", dx, dxVF, dy, dyVF, dz, dzVF);
 		fprintf(file, "ZFS:              %10.6lf    %d    %+10.6lf   %d    \n", ZFS_E, ZFS_EVF, ZFS_Angle, ZFS_AngleVF);
 		fprintf(file, "Exchange:         %10.5lf    %d    %10.5lf    %d    %10e    %d    \n\n", J0, J0VF, J2, J2VF, JDiffusion, JDiffusionVF);
 
+		// Quasi-libration parameters
 		fprintf(file, "Libration:        %10.6lf    %d    %10.6lf    %d    %10.6lf    %d    \n", LibrationAmplitude[0], LibrationAmplitudeVF[0], LibrationAmplitude[1], LibrationAmplitudeVF[1], LibrationAmplitude[2], LibrationAmplitudeVF[2]);
 		fprintf(file, "LibrationEuler:   %10.6lf    %d    %10.6lf    %d    %10.6lf    %d    \n", LibrationEuler[0], LibrationEulerVF[0], LibrationEuler[1], LibrationEulerVF[1], LibrationEuler[2], LibrationEulerVF[2]);
 		fprintf(file, "LibDistrWidth:    %10.6lf    %d    %10.6lf    %d    %10.6lf    %d    \n", LibDistrWidth[0], LibDistrWidthVF[0], LibDistrWidth[1], LibDistrWidthVF[1], LibDistrWidth[2], LibDistrWidthVF[2]);
 		fprintf(file, "LibDistrNSites:   %d    \n\n", LibDistrNSites);
 
+		// Rotational diffusion rates, diffusion types and jump-diffusion residence times
 		fprintf(file, "Diffusion:        %10e    %d    %10e    %d    %10e    %d    \n", Rx, RxVF, Ry, RyVF, Rz, RzVF);
 		fprintf(file, "DiffusionEuler:   %+10.6lf    %d    %+10.6lf    %d    %+10.6lf    %d    \n", DiffusionEuler[0], DiffusionEulerVF[0], DiffusionEuler[1], DiffusionEulerVF[1], DiffusionEuler[2], DiffusionEulerVF[2]);
 
 		fprintf(file, "DiffusionType:      %4.2lf    %4.2lf    %4.2lf        // Eperp, Eperp*, Epar \n",  DiffusionType[0], DiffusionType[1], DiffusionType[2]);
 		fprintf(file, "RTau:             %10.6lf    %d    %10.6lf    %d    %10.6lf    %d          \n",  RTau[0], RTauVF[0],  RTau[1], RTauVF[1],  RTau[2], RTauVF[2]);
 
+		// Discrete-jump axes
 		for(int i=0; i<NJumpAxes; i++)
 		{
 			fprintf(file, "Jumps:            %10.6lf    %d    %10.6lf    %d    %10.6lf    %d    %10.6lf    %d      // fi, teta, angle, frequency\n", JumpAxisFi[i], JumpAxisFiVF[i], JumpAxisTeta[i], JumpAxisTetaVF[i], JumpAngle[i], JumpAngleVF[i], JumpFrequency[i], JumpFrequencyVF[i]);
 		}
 		fprintf(file, "\n");
 
+		// Mean-field potential coefficients, or Potential: no
 		if(MFPotential.Lmax)
 		{
 			fprintf(file, "Potential:\n");
@@ -708,6 +796,7 @@ void MagneticParameters::WriteToFile(char* filename)
 			fprintf(file, "Potential:        no\n\n");
 
 
+		// Isotropic hyperfine nuclei, or Hyperfine: no
 		if(HyperfineCount)
 		{
 			fprintf(file, "Hyperfine:\n");
@@ -723,6 +812,8 @@ void MagneticParameters::WriteToFile(char* filename)
 
 
 		
+		// Basis truncation, pruning and Lanczos settings, then field net, amplitude and
+		// orientation integration settings
 		fprintf(file, "Truncation:       %d      %d      %d      %d      %d        // LE, LO, K, M, N \n\n", LEmax, LOmax, Kmax, Mmax, Nmax);
 		fprintf(file, "Pruning:          %d      %10.5lf    %10.5lf    // NPrune dHPrune PruningTolerance\n\n", NPrune, dHPrune, PruningTolerance);
 		fprintf(file, "LanczosSteps:     %d\n", LanczosSteps);
@@ -738,6 +829,7 @@ void MagneticParameters::WriteToFile(char* filename)
 */
 		fprintf(file, "Integration_Net:      %d    \n", IntegrationNet);
 
+		// Keyword of the orientation integration method
 		if(IntegrationMethod==INTEGRATE_GAUSSKRONROD)
 			fprintf(file, "IntegrateGaussKronrod\n");
 		else if(IntegrationMethod==INTEGRATE_VOITLANDER)
@@ -749,6 +841,7 @@ void MagneticParameters::WriteToFile(char* filename)
 			fprintf(file, "AmplitudeNormalized\n");
 		
 		fprintf(file, "TransitionCutoff: %lf  \n", TransitionIntensityCutoff);
+		// The optimiser settings are stored once, in the section of particle 0
 		if(Count==0)
 		{
 		fprintf(file, "\nAlgorithm:   %s  \n", NLOptAlgorithm);
@@ -761,9 +854,15 @@ void MagneticParameters::WriteToFile(char* filename)
 }
 
 
+// Appends a compact, human-readable summary of the parameters of this particle to a file: one tensor with its Euler
+// angles per line, leaving out items that do not apply (the second electron and the spin-spin terms of a monoradical,
+// diffusion, jumps and potential of a rigid-limit calculation). The file is opened in append mode.
+// Input: filename, the file to append to.
+// Used by: WriteOutput (ReadExperimental.cpp), for every particle after the header of each spectrum file.
 void MagneticParameters::WriteToFileBrief(char* filename)
 {
 		FILE *file;
+		// Open in append mode and write the particle number and the conformer data
 		file=fopen(filename, "a+");
 		fprintf(file, "Particle: %d\n", Count);
 		fprintf(file, "ConformerGroup: %d\n", ConformerGroup);
@@ -777,6 +876,8 @@ void MagneticParameters::WriteToFileBrief(char* filename)
 			fprintf(file, "\n");
 
 		}
+		// Monoradical flag, then the tensors with variate flags and Euler angles; the items of the second electron and the
+		// spin-spin terms are written only for biradicals
 		if (isMonoradical)
 			fprintf(file, "Monoradical\n");
 
@@ -802,6 +903,7 @@ void MagneticParameters::WriteToFileBrief(char* filename)
 		if(!isMonoradical) fprintf(file, ", ZFS: %10.6lf    %d   %+10.6lf   %d", ZFS_E, ZFS_EVF, ZFS_Angle, ZFS_AngleVF);
 		if(!isMonoradical) fprintf(file, ", Exchange:%10.5lf    %d    %10.5lf    %d    %10e    %d    \n\n", J0, J0VF, J2, J2VF, JDiffusion, JDiffusionVF);
 
+	// Libration parameters, written only if a libration amplitude is non-zero
 	if (LibrationAmplitude[0] || LibrationAmplitude[1] || LibrationAmplitude[0])
 	{
 		fprintf(file, "Libration:        %10.6lf    %d    %10.6lf    %d    %10.6lf    %d    \n", LibrationAmplitude[0], LibrationAmplitudeVF[0], LibrationAmplitude[1], LibrationAmplitudeVF[1], LibrationAmplitude[2], LibrationAmplitudeVF[2]);
@@ -809,6 +911,7 @@ void MagneticParameters::WriteToFileBrief(char* filename)
 		if(LibDistrNSites) fprintf(file, "LibDistrWidth:    %10.6lf    %d    %10.6lf    %d    %10.6lf    %d    \n", LibDistrWidth[0], LibDistrWidthVF[0], LibDistrWidth[1], LibDistrWidthVF[1], LibDistrWidth[2], LibDistrWidthVF[2]);
 		if(LibDistrNSites) fprintf(file, "LibDistrNSites:   %d    \n", LibDistrNSites);
 	}
+    // Slow-motion parameters: diffusion, jump axes and potential, for the Liouville calculation only
     if(Liouville)
 	{
 		fprintf(file, "Diffusion:   %10e    %d    %10e    %d    %10e    %d ", Rx, RxVF, Ry, RyVF, Rz, RzVF);
@@ -835,6 +938,7 @@ void MagneticParameters::WriteToFileBrief(char* filename)
 		}
 
 	  }
+		// Isotropic hyperfine nuclei
 		if(HyperfineCount)
 		{
 			fprintf(file, "Hyperfine:\n");
@@ -846,15 +950,18 @@ void MagneticParameters::WriteToFileBrief(char* filename)
 		}
 
 		
+		// Truncation limits and Lanczos steps for the Liouville calculation, pruning only if it is switched on
 		if(Liouville) fprintf(file, "Truncation:       %d      %d      %d      %d     %d         // LE, LO, K, M, N \n", LEmax, LOmax, Kmax, Mmax, Nmax);
 		if(Liouville) fprintf(file, "LanczosSteps:     %d\n", LanczosSteps);
 		if(NPrune) fprintf(file, "Pruning:          %d      %10.5lf    %10.5lf    // NPrune dHPrune PruningTolerance\n", NPrune, dHPrune, PruningTolerance);
+		// The field net settings are written for particle 0 only
 		if(Count==0)
 		{
 			fprintf(file, "FCenter:   %8.3lf   %10.6lf   %d, ", CenterField0, Shift, ShiftVF);
 			fprintf(file, "NPoints: %d, ", NPoints);
 			fprintf(file, "DeltaH: %lf \n", fs);
 		}
+		// Amplitude and orientation integration settings
 		fprintf(file, "Amplitude:   %10.6lf    %d, ", AmplitudeFactor, AmplitudeFactorVF);
 		fprintf(file, "Integration_Net:      %d, ", IntegrationNet);
 
@@ -868,6 +975,7 @@ void MagneticParameters::WriteToFileBrief(char* filename)
 			fprintf(file, "IntegrateGauss\n");
 
 		fprintf(file, "TransitionCutoff: %lf  \n", TransitionIntensityCutoff);
+		// The optimiser settings are written for particle 0 only
 		if(Count==0)
 		{
 		fprintf(file, "Algorithm:   %s, ", NLOptAlgorithm);
@@ -880,6 +988,15 @@ void MagneticParameters::WriteToFileBrief(char* filename)
 }
 
 
+// Prepares the interaction tensors for the current parameter values. For a biradical it builds the 3x3 spin-spin
+// tensor DJ from the dipolar vector, the zero-field splitting and the isotropic exchange J0. It then rotates the
+// tensors from their own principal-axes frames into the g1 frame and from there into the molecular frame, using the
+// Euler angles and RotationMatrix, and rotates the diffusion tensor. The diffusion, jump, JDiffusion and R1 rates
+// are converted from 1/s to Gauss units. Finally it builds the spherical-tensor form (SphericalTensor) of every
+// interaction and stores it in Interactions[0..5] for the construction of the Liouvillian.
+// Inputs: the parameters of this object (angles in radians) and CenterField. Outputs: g1R, g2R, A1R, A2R,
+// HGaussR, HLorentzR, DJ, DiffusionR, the rates in Gauss units, Fm* and Interactions of this object.
+// Used by: Discrepancy() in Discrepancy.cpp, once for each particle at every evaluation of the discrepancy.
 void MagneticParameters::RotateTensors()
 {
     Matrix<double, 3, 3> RotMat, RotMat_T;
@@ -888,6 +1005,7 @@ void MagneticParameters::RotateTensors()
 	if(!(isMonoradical))
 	{
 		
+		// Length of the dipolar vector, and the Euler angles of the ZFS axis system derived from its direction (plus ZFS_Angle)
 		double dr=sqrt(dx*dx+dy*dy+dz*dz);
 		Matrix<double, 3, 3> D, E;
 		double ksi, tet;
@@ -900,11 +1018,13 @@ void MagneticParameters::RotateTensors()
 		DEuler[1]=tet;
 		DEuler[2]=ksi;
 
+		// Dipolar tensor D=18561*(dr^2*I-3*d*d^T)/dr^5 for the vector d=(dx,dy,dz)
 		D << dr*dr-3*dx*dx, -3*dx*dy, -3*dx*dz,
 		    -3*dx*dy, dr*dr-3*dy*dy, -3*dy*dz,
 		    -3*dx*dz, -3*dy*dz, dr*dr-3*dz*dz;
 		D=D*18561.0*pow(dr, -5);
 
+		// Non-axial zero-field splitting tensor diag(-ZFS_E, ZFS_E, 0), rotated by the Euler angles DEuler below
 		E << -ZFS_E, 0, 0,
 			  0, ZFS_E, 0,
 			  0, 0, 0;
@@ -924,6 +1044,7 @@ void MagneticParameters::RotateTensors()
 		cout << E << endl << endl;
 */
 
+		// Isotropic exchange tensor J0*I, and the total spin-spin tensor DJ=D+J+E
 		Matrix<double, 3, 3> J;
 		J << 1, 0, 0,
 			 0, 1, 0,
@@ -933,6 +1054,7 @@ void MagneticParameters::RotateTensors()
 	}
 	else   // if isMonoradical
 	{
+		// A monoradical has no spin-spin tensor
 		DJ=Matrix<double, 3, 3>::Zero(3,3);
 	}
 
@@ -964,6 +1086,7 @@ void MagneticParameters::RotateTensors()
 	HGaussR=RotMat*HGaussR*RotMat.transpose();
 	HLorentzR=RotMat*HLorentzR*RotMat.transpose();
 
+    // Diffusion tensor diag(Rx,Ry,Rz) rotated by DiffusionEuler
     RotMat=RotationMatrix(DiffusionEuler);
 
 	Matrix<double, 3, 3> Diffusion, DiffR;
@@ -972,6 +1095,7 @@ void MagneticParameters::RotateTensors()
 				  0, 0, Rz;
 
 	DiffR=RotMat*Diffusion*RotMat.transpose();
+	// Store the rotated diffusion tensor as a complex matrix
 	for(int i=0; i<3; i++)
 		for(int j=0; j<3; j++)
 			DiffusionR(i, j)=DiffR(i, j);
@@ -984,9 +1108,11 @@ void MagneticParameters::RotateTensors()
 //	Rz/=normR;
 
 //	JumpFrequencyR=JumpFrequency/normR;
+	// Jump frequencies in Gauss units
 	for(int i=0; i<NJumpAxes; i++)
 		JumpFrequencyR[i]=JumpFrequency[i]/normR;
 
+	// Diffusion tensor and JDiffusion in Gauss units
 	for(int j=0; j<3; j++)
 		for(int k=0; k<3; k++)
 		{
@@ -1023,9 +1149,12 @@ void MagneticParameters::RotateTensors()
 // Calculation of Interactions:
 	// Object, corresponding to each interaction in the spherical representation, is constructed for each term in the Spin Hamiltonian
 
+	// Field scale B0=CenterField/g_iso, with g_iso the isotropic g value (trace/3) of particle 0
 	double B0=CenterField*3/(MagneticParameterArray[0].g1R.trace());
 
 //	cout << B0 << endl;
+	// Fill the six interaction records for g1, g2, A1, A2, DJ and the Lorentzian line width: the spherical tensor (Fdu)
+	// and the spin-space matrices of the interaction for the field scale B0 (AuL)
 	Interactions[0].Fdu=*Fmg1;
 	Interactions[0].AuL.Set(Ag1L, B0);
 	strcpy(Interactions[0].Fdu.Name, "g1");
@@ -1054,9 +1183,18 @@ void MagneticParameters::RotateTensors()
 
 }
 
+// For conformationally mobile biradicals, builds the matrix ConversionRateR of the exchange between conformers in
+// Gauss units: off-diagonal elements are minus the conversion rates, each diagonal element is minus the sum of the
+// other elements of its row weighted by sqrt(|AmplitudeFactor of the other conformer / own AmplitudeFactor|).
+// It also sums the absolute amplitude factors of the members of the conformer group into AmplitudeFactorAllConformers.
+// Inputs: ConversionRate, NConformers and the AmplitudeFactor of the particles (through MagneticParameterArray).
+// Outputs: ConversionRateR and AmplitudeFactorAllConformers of this object.
+// Used by: Discrepancy() in Discrepancy.cpp, for every particle after all particles have been updated.
 void MagneticParameters::CalculateTranstionRateMatrix()
 {
+	// Factor g0*beta_e/h_bar that converts rates in 1/s into Gauss units
 	double normR=2.002322*927.31e-30/1.05443e-34; // g0*beta_e/h_bar;
+	// Rate matrix of the exchange between conformers: off-diagonal elements first, then the diagonal
 	if(NConformers>1)
 	{
 		for(int i=0; i<NConformers; i++)
@@ -1075,6 +1213,7 @@ void MagneticParameters::CalculateTranstionRateMatrix()
 			ConversionRateR[i*MAX_PARTICLES+i]=sum;
 		}
 	}
+	// Sum of the absolute amplitude factors over the members of the conformer group
 	AmplitudeFactorAllConformers=0;
 	for (int i=0; i<NConformers; i++)
 	{
@@ -1111,6 +1250,13 @@ void MagneticParameters::CalculateTranstionRateMatrix()
 }
 
 
+// Averages the interaction tensors g1R, g2R, A1R, A2R and DJ over small-angle librations of the molecule. The tensors
+// are rotated into the libration frame (LibrationEuler) and averaged over a set of orientations that covers the
+// libration amplitudes LibrationAmplitude[0..2]: a tilt with weight sin(teta) when the first two amplitudes are
+// non-zero, and a twist by an angle psi from minus to plus the third amplitude. The averaged tensors are rotated back
+// to the molecular frame and replace the stored ones; if all amplitudes are below LIB_MIN they are left unchanged.
+// The sampling uses NS steps for each angle.
+// Used by: Discrepancy() in Discrepancy.cpp, after RotateTensors, for every particle.
 void MagneticParameters::QuasiLibrations()
 {
     Matrix<double, 3, 3> g1Lib, g2Lib, A1Lib, A2Lib, DLib;
@@ -1127,6 +1273,7 @@ void MagneticParameters::QuasiLibrations()
 // now all tensors are in Librations frame.
 // cout << "Before:" << endl << g1R << endl << endl;
 
+	// Libration amplitudes about the three axes of the libration frame (radians)
 	double LX=LibrationAmplitude[0];
 	double LY=LibrationAmplitude[1];
 	double LZ=LibrationAmplitude[2];
@@ -1140,8 +1287,10 @@ void MagneticParameters::QuasiLibrations()
    DJsum << 0, 0, 0, 0, 0, 0, 0, 0, 0;
  //cout << "Amplitudes:" << LX << " " << LY << " " << LZ << endl;
 
+   // The twist amplitude LZ is limited to pi
    if (LZ>=PI) LZ=PI;
    double fi, teta, psi;
+ // Case 1: only the twist amplitude LZ is non-zero
  if((fabs(LX)<=LIB_MIN)&&(fabs(LY)<=LIB_MIN))		// ONLY PSI!
  {
 	 if(fabs(LZ)<=LIB_MIN)
@@ -1156,9 +1305,11 @@ void MagneticParameters::QuasiLibrations()
 	 }
 	 else
 	 {
+		// Average over twist angles psi from -LZ to LZ in steps of LZ/NS
 		fi=0; teta=0;
 		for(psi=-fabs(LZ); psi<=fabs(LZ);psi+=fabs(LZ)/NS)		
 		   {
+				// Euler angles of this libration step; rotate every tensor and add it to the running sums
 				EulerLib[0]=fi;
 				EulerLib[1]=teta;
 				EulerLib[2]=-fi+psi;
@@ -1179,6 +1330,7 @@ void MagneticParameters::QuasiLibrations()
 
 //				cout << g1L << endl << endl;
 		   }
+		   // Mean over the sampled twist angles
 		   g1sum=g1sum/sum;
 		   A1sum=A1sum/sum;
 		   g2sum=g2sum/sum;
@@ -1189,8 +1341,10 @@ void MagneticParameters::QuasiLibrations()
  }
  else	//  also Lx, Ly
  {
+   // Case 2: tilt libration. Average over the azimuth fi and the tilt angle teta, weighting each tilt by sin(teta)
    for(fi=0; fi<2*PI; fi+=2*PI/NS)
    {
+	   // Largest tilt angle at this azimuth: LY for cos(fi)^2=1 and LX for cos(fi)^2=0, at most pi/2
 	   double cos2fi=cos(fi)*cos(fi);
 //	   double sin2fi=sin(fi)*sin(fi);
 	   double tetafinal;
@@ -1200,10 +1354,13 @@ void MagneticParameters::QuasiLibrations()
 		   tetafinal=LX+(LY-LX)*cos2fi;        // too many trouble with cone: atan(sqrt(1/(sin2fi/b1+cos2fi/a1)));
 		   if(tetafinal>PI/2) tetafinal=PI/2;				// check of maximum teta!
 	   }
+	   // Tilt angles from tetafinal/NS up to, but not including, tetafinal
 	   for (teta=tetafinal/NS; teta<tetafinal; teta+=tetafinal/NS)
 	   {
+		   // Without a twist amplitude only the tilt is sampled, otherwise twist angles psi are added to every tilt
 		   if(fabs(LZ)<=LIB_MIN)
 		   {
+				// Tilt only: rotate every tensor and add it with weight sin(teta)
 				EulerLib[0]=fi;
 				EulerLib[1]=teta;
 				EulerLib[2]=-fi;
@@ -1226,6 +1383,7 @@ void MagneticParameters::QuasiLibrations()
 		   else
 		   for(psi=-fabs(LZ); psi<=fabs(LZ);psi+=fabs(LZ)/NS)		// NOT UNIFORM!!! TODO: SYmmetric relative to psi=0;
 		   {
+				// Tilt and twist: rotate every tensor and add it with weight sin(teta)
 				EulerLib[0]=fi;
 				EulerLib[1]=teta;
 				EulerLib[2]=-fi+psi;
@@ -1246,6 +1404,7 @@ void MagneticParameters::QuasiLibrations()
 		   }
 	   }
    }
+   // Weighted mean over all sampled orientations
    g1sum=g1sum/sum;
    A1sum=A1sum/sum;
    g2sum=g2sum/sum;
@@ -1261,16 +1420,22 @@ void MagneticParameters::QuasiLibrations()
 	A1R=RotMat.transpose()*A1sum*RotMat;
 	A2R=RotMat.transpose()*A2sum*RotMat;
 	DJ =RotMat.transpose()*DJsum*RotMat;
+// Correction: after the back-rotation above the tensors are in the molecular frame again, not in the libration frame
 // now all tensors are in Librations frame.
 
 }
 
+// Allocates FieldNet and Spectrum (NPoints values each) and fills FieldNet with NPoints equidistant fields of step
+// fs centred on CenterField0: FieldNet[i]=CenterField0+(i-(NPoints-1)/2)*fs, where (NPoints-1)/2 is an integer division.
+// Inputs: CenterField0, NPoints and fs of this object. Outputs: FieldNet and Spectrum of this object.
+// Used by: main() in main.cpp, once for each particle after its input has been read.
 void MagneticParameters::GenerateFieldNet()
 {
 // Generating FieldNet:
 	FieldNet=(double*)malloc(NPoints*sizeof(double));
 	Spectrum=(double*)malloc(NPoints*sizeof(double));
 
+	// Equidistant field values with step fs around the centre field
 	for(int i=0; i<NPoints; i++)
 		FieldNet[i]=CenterField0+(i-(NPoints-1)/2)*fs;
 
@@ -1278,6 +1443,10 @@ void MagneticParameters::GenerateFieldNet()
 }
 
 
+	// Constructor: sets the pointers to the spherical tensors (Fmg1, Fmg2, FmA1, FmA2, FmD, FmW, FmR) to NULL, so that
+	// RotateTensors can delete them safely at its first call. All other members are filled by ReadFromFile, Par2Arg
+	// and RotateTensors.
+	// Used by: implicitly, when main() creates the array new MagneticParameters[NParticles] (main.cpp).
 	MagneticParameters::MagneticParameters()
 	{
 
@@ -1285,11 +1454,15 @@ void MagneticParameters::GenerateFieldNet()
 		Fmg1=NULL; Fmg2=NULL; FmA1=NULL; FmA2=NULL; FmD=NULL; FmW=NULL; FmR=NULL;
 	}
 
+	// Destructor: does nothing, the arrays and spherical tensors allocated by other methods are not released here.
+	// Used by: nothing in this code base (the MagneticParameters array created in main.cpp is never deleted).
 	MagneticParameters::~MagneticParameters()
 	{
 	}
 
 // Advances the index into the flat optimiser argument arrays, with a bound check against MAX_ARG
+// Used by: MagneticParameters::Par2Arg (this file, after each parameter that becomes an argument) and
+// OrderParameters::Par2Arg (ODF.cpp).
 void NextArg(int *NArg)
 {
 	(*NArg)++;
@@ -1303,8 +1476,20 @@ void NextArg(int *NArg)
 }
 
 
+		// Collects the parameters that the optimiser may vary into the flat arrays Arguments (starting values), lb and ub
+		// (lower and upper bounds, from the MIN_* and MAX_* constants in BiradicalODF.h), advancing the index *NArg. A
+		// parameter is collected if its variate flag VF is 1 or 2: 1 varies the value itself, 2 varies a transformed value
+		// (1000*(g-2) for g values, log10 of the value for the exchange, diffusion, conversion and jump rates; if such a
+		// rate is exactly zero the variation is switched to direct with a warning); for the other parameters 2 acts like 1.
+		// The position of each collected parameter in Arguments is stored in the matching ...NArg member, -1 if the
+		// parameter is not varied, so that Arg2Par can write the values back. Potential coefficients are collected only for
+		// flag 1. The function also sets the nuclear spin and Sx2=2*spin of every hyperfine nucleus and stores the trace
+		// sums used by variate flag 3. Inputs: the parameters of this object. Outputs: Arguments, ub, lb and *NArg are
+		// extended, ...NArg members are set.
+		// Used by: main() in main.cpp, once for each particle, before the optimisation starts.
 		void MagneticParameters::Par2Arg(double* Arguments, double *ub, double *lb, int *NArg)
 	{
+	// Tensor components (g, A, Gaussian and Lorentzian widths): flag 1 or 2 stores the value and its bounds in Arguments
 	/////////// g1 Tensor
 		if ((g1VF(0,0)==1) || (g1VF(0,0)==2))
 		{
@@ -1527,6 +1712,7 @@ void NextArg(int *NArg)
 			NextArg(NArg);
 		}
 		else HLorentzNArg(2,2)=-1;
+// Euler angles of the tensor axes, diffusion axes and libration frame, then libration amplitudes and widths
 ///      EULER ANGLES
 	/////////// g1Euler Euler
 		if ((g1EulerVF[0]==1) || (g1EulerVF[0]==2))
@@ -1811,6 +1997,7 @@ void NextArg(int *NArg)
 		else LibDistrWidthNArg[2]=-1;
 
 // Non-tensors:
+		// Components of the dipolar vector
 		if((dxVF==1)||(dxVF==2))
 		{
 			Arguments[*NArg]=dx;
@@ -1838,6 +2025,7 @@ void NextArg(int *NArg)
 			NextArg(NArg);
 		}
 		else dzNArg=-1;
+		// Exchange parameters: flag 1 varies the value, flag 2 its log10
 		if((J0VF==1)||(J0VF==2))
 		{
 			if((J0VF==2)&&(J0==0.0))
@@ -1914,6 +2102,7 @@ void NextArg(int *NArg)
 		else JDiffusionNArg=-1;
 
 
+		// Zero-field splitting parameter E and angle
 		if((ZFS_EVF==1)||(ZFS_EVF==2))
 		{
 			Arguments[*NArg]=ZFS_E;
@@ -1934,6 +2123,7 @@ void NextArg(int *NArg)
 		else ZFS_AngleNArg=-1;
 
 
+		// Rotational diffusion rates Rx, Ry, Rz: the value for flag 1, its log10 for flag 2
 		if((RxVF==1)||(RxVF==2))
 		{
 			if((RxVF==2)&&(Rx==0.0))
@@ -2079,6 +2269,7 @@ void NextArg(int *NArg)
 			else HFS[i].HFConstantNArg=-1;
 		}
 
+		// Nuclear spin of each hyperfine nucleus from its name, and Sx2=2*spin
 		for (int i=0; i<HyperfineCount; i++)
 		{
 			HFS[i].SetMagneticFromName();
@@ -2151,6 +2342,7 @@ void NextArg(int *NArg)
 
 
 
+		// Mean-field potential coefficients: only flag 1 makes a coefficient an argument, the others are marked -1
 		for(int L=2; L<=MFPotential.Lmax; L+=2)
 			for(int K=0; K<=L; K+=2)
 			{
@@ -2171,6 +2363,7 @@ void NextArg(int *NArg)
 			
 
 
+		// Field shift and amplitude factor
 		if((ShiftVF==1)||(ShiftVF==2))
 		{
 			Arguments[*NArg]=Shift;
@@ -2189,6 +2382,7 @@ void NextArg(int *NArg)
 			NextArg(NArg);
 		}
 		else AmplitudeFactorNArg=-1;
+		// Sums of the three principal values, which variate flag 3 keeps constant in Arg2Par
 		g1Average3=g1(0,0)+g1(1,1)+g1(2,2);
 		g2Average3=g2(0,0)+g2(1,1)+g2(2,2);
 		A1Average3=A1(0,0)+A1(1,1)+A1(2,2);
@@ -2196,6 +2390,17 @@ void NextArg(int *NArg)
 
 	}
 
+	// The inverse of Par2Arg: writes the values of the optimiser arguments back into the parameters, then applies the
+	// dependent variate flags. Flag 2 values are converted back (g=2+0.001*argument, 10^argument for the exchange,
+	// diffusion, conversion and jump rates). Flag 3 sets the z component of g1, g2, A1 or A2 so that the trace is kept;
+	// flag 4 copies the y component to the x and z components (also for Rx, Rz and RTau); flag 5 copies the x component
+	// to y and z; flag 6 sets the g2 and A2 components equal to those of g1 and A1; flag 7 sets the Euler angles of A1,
+	// A2, the Gaussian and the Lorentzian tensor to the inverse of those of g1 (the diffusion angles are set equal to
+	// those of g1); flag 8 sets them equal to those of g2; flags 10 and above copy the parameter from particle VF-10.
+	// Afterwards the line widths are made positive, the sign of J0 is restored and, for the slow-motion calculation,
+	// the order parameters of the mean-field potential are recalculated.
+	// Input: Arguments, the vector of the optimiser. Outputs: the parameters of this object.
+	// Used by: Discrepancy() in Discrepancy.cpp, at the start of every evaluation of the discrepancy, for each particle.
 	void MagneticParameters::Arg2Par(const double* Arguments)
 	{
 // Independently varied values:
@@ -2228,6 +2433,7 @@ void NextArg(int *NArg)
 					if(LibDistrWidthNArg[j]!=-1) LibDistrWidth[j]=Arguments[LibDistrWidthNArg[j]];
 
 		}
+		// Dipolar vector and zero-field splitting parameters
 		if(dxNArg!=-1) dx=Arguments[dxNArg];
 		if(dyNArg!=-1) dy=Arguments[dyNArg];
 		if(dzNArg!=-1) dz=Arguments[dzNArg];
@@ -2235,6 +2441,7 @@ void NextArg(int *NArg)
 		if(ZFS_AngleNArg!=-1) ZFS_Angle=Arguments[ZFS_AngleNArg];
 
 
+		// Exchange and diffusion rates: the value for flag 1, 10^argument for flag 2
 		if(J0NArg!=-1) 
 		{
 			if(J0VF==1) J0=Arguments[J0NArg];
@@ -2265,6 +2472,7 @@ void NextArg(int *NArg)
 			if(RzVF==1) Rz=Arguments[RzNArg];
 			if(RzVF==2) Rz=pow(10.0, Arguments[RzNArg]);
 		}
+		// Conformer conversion rates
 		if(NConformers>1)
 		{
 			for(int i=0; i<NConformers; i++)
@@ -2277,6 +2485,7 @@ void NextArg(int *NArg)
 		}
 
 
+		// Jump-diffusion residence times
 		for(int i=0; i<3; i++)
 			if(RTauNArg[i]!=-1)
 			{
@@ -2301,6 +2510,7 @@ void NextArg(int *NArg)
 			}
 		}
 
+		// Mean-field potential coefficients are written back with Add
 		for(int L=2; L<=MFPotential.Lmax; L+=2)
 			for(int K=0; K<=L; K+=2)
 			{
@@ -2312,6 +2522,7 @@ void NextArg(int *NArg)
 			}
 
 
+		// Field shift and amplitude factor
 		if(ShiftNArg!=-1) Shift=Arguments[ShiftNArg];
 		if(AmplitudeFactorNArg!=-1) AmplitudeFactor=Arguments[AmplitudeFactorNArg];
 // Dependencies
@@ -2416,6 +2627,7 @@ void NextArg(int *NArg)
 			DiffusionEuler[j]=g2Euler[j];
 	 }
  // Variate flags 10+
+	 // Parameters tied to particle VF-10 are copied from MagneticParameterArray[VF-10]
 	 for(int j=0;j<=2; j++)
 	 {
 		 if (g1VF(j, j)>=10)
@@ -2453,6 +2665,7 @@ void NextArg(int *NArg)
 	 if (dzVF>=10)
 		 dz=MagneticParameterArray[dzVF-10].dz;
 	 
+	 // Conversion rates tied to another particle
 	 if(NConformers>1)
 	 {
 		 for(int i=0; i<NConformers; i++)
@@ -2477,6 +2690,7 @@ void NextArg(int *NArg)
 	   if (RTauVF[i]>=10)
 		 RTau[i]=MagneticParameterArray[RTauVF[i]-10].RTau[i];
 	 }
+	// Hyperfine constants tied to another particle, scaled with HFConstantCoefficient
 	for (int i=0; i<HyperfineCount; i++)
 	{
 		if(HFS[i].HFConstantVF>=10)
@@ -2494,8 +2708,10 @@ void NextArg(int *NArg)
 
 	 if (AmplitudeFactorVF>=10)
 		 AmplitudeFactor=MagneticParameterArray[AmplitudeFactorVF-10].AmplitudeFactor*AmplitudeCoefficient;
+	 // All particles use the field shift of particle 0
 	 Shift=MagneticParameterArray[0].Shift;
 
+	 // For the slow-motion calculation recalculate the order parameters of the mean-field potential
 	 if(Liouville)
 	 {
 		 MFPotential.MyCount=Count;

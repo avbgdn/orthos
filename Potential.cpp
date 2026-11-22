@@ -18,6 +18,17 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+// Potential.cpp: the mean-field orienting potential of a particle in the slow-motion (Liouville) model and the quantities
+// derived from it. The potential is expanded as the sum over even L and K of the coefficients A(L,K) times Wigner functions
+// D^L_0K (class Potential, declared in BiradicalODF.h; coefficients stored by Add), and exp(sum) is the equilibrium
+// orientation distribution. By numerical integration over orientations the code computes the order parameters OP(L,K) of the
+// equilibrium distribution and SOP(L,K) of its square root (CalculateOP_GK, CalculateOP), the order parameters of the
+// discrete-jump model (CalculateOP_Jumps_GK) and the XLK coefficients of the rotational diffusion operator in the potential
+// (CalculateXLK). It also holds the accessor functions and a diagnostic dump (PrintOut).
+// Used by: RWMagnetic.cpp (reads and sets the coefficients, calls CalculateOP_GK in MagneticParameters::Arg2Par),
+// Discrepancy.cpp (CalculateOP_Jumps_GK, CalculateXLK and PrintOut at every evaluation), LiouvilleMatrixElementB.cpp and
+// LiouvillianB.cpp (read coefficients, order parameters and XLK).
+
 #include "LiouvilleMatrixElementB.h"
 
 // integration net for potential order parameters
@@ -30,17 +41,27 @@
 // - XLK coeffients of rotation diffusion superoperator calculation and storage
 // - printout
 
+// Returns the potential coefficient A(L,K); 0 for odd L or K, for L>MAX_POT and for |K|>L. Negative K is mapped to |K| (the
+// coefficients are stored for K>=0 at position L*(L+2)/8+K/2).
+// Used by: CalculateOP, CalculateOP_GK, CalculateOP_Jumps_GK and PrintOut (this file); XLK_ND and XLK
+// (LiouvilleMatrixElementB.cpp); WriteToFile, WriteToFileBrief and Par2Arg (RWMagnetic.cpp).
 double Potential::Get(int L, int K)
 	{
+		// only even L and K occur; anything else is zero
 		if (L%2) return 0;
 		if (K%2) return 0;
 		if (L>MAX_POT) return 0;
+		// negative K is mapped to |K|
 		if(K<0) K=-K;
 		if (K>L) return 0;
 		return A[L*(L+2)/8+K/2];
 	}
+// Returns the variate flag of the coefficient A(L,K) (1: fitted by the optimiser, see Par2Arg in RWMagnetic.cpp); same
+// index rules as Get.
+// Used by: PrintOut (this file); WriteToFile, WriteToFileBrief, Par2Arg and Arg2Par (RWMagnetic.cpp).
 int Potential::GetVF(int L, int K)
 	{
+		// same index checks and mapping as in Get
 		if (L%2) return 0;
 		if (K%2) return 0;
 		if (L>MAX_POT) return 0;
@@ -49,8 +70,12 @@ int Potential::GetVF(int L, int K)
 		return VF[L*(L+2)/8+K/2];
 	}
 
+// Returns the optimiser argument number of the coefficient A(L,K) as stored by SetNArg (-1: not fitted); same index rules
+// as Get, except that invalid indices give 0.
+// Used by: Arg2Par (RWMagnetic.cpp).
 int Potential::GetNArg(int L, int K)
 	{
+		// same index checks and mapping as in Get
 		if (L%2) return 0;
 		if (K%2) return 0;
 		if (L>MAX_POT) return 0;
@@ -59,38 +84,58 @@ int Potential::GetNArg(int L, int K)
 		return NArg[L*(L+2)/8+K/2];
 	}
 
+// Stores the coefficient A(L,K)=Value together with its variate flag (K is expected to be in 0..L). Odd L or K and L>MAX_POT
+// are ignored; Lmax is raised to L if necessary, and the potential is marked as non-axial (isAxial=false) when a non-zero
+// coefficient with K!=0 is stored.
+// Used by: ReadFromFile and Arg2Par (RWMagnetic.cpp).
 void Potential::Add(int L, int K, double Value, int VariateFlag)
 	{
+		// ignore terms that cannot occur
 		if (L%2) return;
 		if (K%2) return;
 		if (L>MAX_POT) return;
+		// keep track of the highest rank present
 		if (L>Lmax) Lmax=L;
+		// store the coefficient and its variate flag
 		A [L*(L+2)/8+K/2]=Value;
 		VF[L*(L+2)/8+K/2]=VariateFlag;
+		// a non-zero term with K>0 breaks the axial symmetry of the potential
 		if ((K!=0)&&(Value!=0)) isAxial=false;
 	}
+// Stores the optimiser argument number NA of the coefficient A(L,K) (-1: not fitted).
+// Used by: Par2Arg (RWMagnetic.cpp).
 void Potential::SetNArg(int L, int K, int NA)
 {
 		NArg[L*(L+2)/8+K/2]=NA;
 }
 
+// Returns the order parameter SOP(L,K) of the square root of the equilibrium distribution (see CalculateOP_GK); M must be 0,
+// odd L or K and L>2*MAX_TRUNC give 0, and negative K is mapped to |K|.
+// Used by: CalculateLiouvillianB (LiouvillianB.cpp), to build the starting vector from the L, K, M of each basis vector.
 double Potential::GetSOP(int L, int K, int M)
 {
+		// only M=0 exists; odd and out-of-range indices give zero
 		if (M)   return 0;
 		if (L%2) return 0;
 		if (K%2) return 0;
 		if (L>2*MAX_TRUNC) return 0;
+		// negative K is mapped to |K|
 		if(K<0) K=-K;
 		if (K>L) return 0;
 		return SOP[L*(L+2)/8+K/2];
 }
 
+// Returns the jump order parameter OP_JUMP_P(L,K) of jump axis NAxis (see CalculateOP_Jumps_GK); 0 for NAxis>=NJumpAxes,
+// odd L, L>2*MAX_TRUNC or K>L. For negative K it returns (-1)^|K| times the complex conjugate of the value at |K|.
+// Used by: MatrixElementJumpsBSM_Pot (LiouvilleMatrixElementB.cpp).
 std::complex<double> Potential::GetOP_JUMP_P(int L, int K, int NAxis)
 {
+		// invalid axis, odd or too large L and K>L give zero
 		if (NAxis>=MagneticParameterParent->NJumpAxes) return 0;
 		if (L%2) return 0;
 		if (L>2*MAX_TRUNC) return 0;
 		if (K>L) return 0;
+		// negative K from the symmetry relation with |K|
 		if(K<0) 
 		{
 			K=-K;
@@ -100,12 +145,17 @@ std::complex<double> Potential::GetOP_JUMP_P(int L, int K, int NAxis)
 		else return OP_JUMP_P[NAxis][L*L/4+K];
 }
 
+// Returns the jump order parameter OP_JUMP_M(L,K) of jump axis NAxis (the jump of the opposite sense to OP_JUMP_P, see
+// CalculateOP_Jumps_GK), with the same index rules as GetOP_JUMP_P.
+// Used by: MatrixElementJumpsBSM_Pot (LiouvilleMatrixElementB.cpp).
 std::complex<double> Potential::GetOP_JUMP_M(int L, int K, int NAxis)
 {
+		// invalid axis, odd or too large L and K>L give zero
 		if (NAxis>=MagneticParameterParent->NJumpAxes) return 0;
 		if (L%2) return 0;
 		if (L>2*MAX_TRUNC) return 0;
 		if (K>L) return 0;
+		// negative K from the symmetry relation with |K|
 		if(K<0) 
 		{
 			K=-K;
@@ -115,8 +165,12 @@ std::complex<double> Potential::GetOP_JUMP_M(int L, int K, int NAxis)
 		else return OP_JUMP_M[NAxis][L*L/4+K];
 }
 
+// Returns the order parameter OP(L,K) of the equilibrium orientation distribution (see CalculateOP_GK); 0 for odd L or K,
+// L>2*MAX_TRUNC and |K|>L. Negative K is mapped to |K|.
+// Used by: MatrixElementJumpsBSM_Pot (LiouvilleMatrixElementB.cpp) and PrintOut (this file).
 double Potential::GetOP(int L, int K)
 {
+	// odd or out-of-range indices give zero
 	if (L%2)
 	{ 
 //		cout << "GetOP" <<  L << ", " << K << " = " << 0 << endl;
@@ -132,6 +186,7 @@ double Potential::GetOP(int L, int K)
 //		cout << "GetOP" <<  L << ", " << K << " = " << 0 << endl;
 		return 0;
 	}
+	// negative K is mapped to |K|
 	if(K<0) K=-K;
 	if (K>L) 
 	{ 
@@ -142,15 +197,21 @@ double Potential::GetOP(int L, int K)
 		return OP[L*(L+2)/8+K/2];
 }
 
+// Fills XLK_Matrix[L/2][MAX_POT+K][MAX_POT+M] for even L up to MaxL and K, M in -L..L. Only M=0 is non-zero: the entry is
+// XLK_ND(L,K,this potential,DiffusionR of the parent MagneticParameters), the coefficient of the rotational diffusion operator
+// in the potential for a non-diagonal diffusion tensor. Prints an error and returns if MaxL>2*MAX_POT.
+// Used by: Discrepancy (Discrepancy.cpp), for every Liouville particle at every evaluation.
 void Potential::CalculateXLK(int MaxL)
 {
 //	cout << "Calculating XLK\t";
 
+	// the table only holds ranks up to 2*MAX_POT
 	if (MaxL>2*MAX_POT)
 	{
 		printf("Error in Potential::CalculateXLK: MaxL>2*MAX_POT!\n");
 		return;
 	}
+	// fill the table: entries with M!=0 are zero, the others are computed with XLK_ND
 	for(int L=0; L<=MaxL; L+=2)
 		for(int K=-L; K<=L; K++)
 			for(int M=-L; M<=L; M++)
@@ -169,21 +230,34 @@ void Potential::CalculateXLK(int MaxL)
 
 }
 
+// Returns the stored XLK coefficient for (L,K,M); 0 for odd L, |K|>L and M!=0. There is no check against the filled range of L.
+// Used by: MatrixElementPotentialB_ND and MatrixElementPotentialBSM_ND (LiouvilleMatrixElementB.cpp).
 std::complex<double> Potential::GetXLK(int L, int K, int M)
 {
+	// outside the filled range or for M!=0 there is no coupling
 	if(L%2)			return 0;
 	if(abs(K)>L)	return 0;
 	if(M)			return 0;
 	return XLK_Matrix[L/2][MAX_POT+K][MAX_POT+M];
 }
+// Computes the order parameters OP(L,K) and SOP(L,K) of the equilibrium distribution exp(ro), and of its square root, by a
+// simple grid sum: INT_NET points in cos(beta) over [0,1] and about INT_NET_FI*sin(beta) points in gamma over [0,pi/2] (the
+// integration nets read from the magnetic input file). At each grid point ro is the sum over even l of A(l,0)*Re D^l_00 plus,
+// for a non-axial potential, 2*A(l,k)*Re D^l_0k over even k>=2. OP and SOP accumulate Re D^L_0K times exp(ro) and exp(ro/2)
+// for even L, K up to 2*MaxL (K=0 only if the potential is axial); everything is then divided by the L=0 value, and
+// Normalization_OP keeps the unnormalised OP(0,0). With Lmax==0 (no potential) only OP(0,0)=SOP(0,0)=1.
+// Used by: nothing in this code base (the call in MagneticParameters::Arg2Par, RWMagnetic.cpp, is commented out;
+// CalculateOP_GK is used instead).
 void Potential::CalculateOP(int MaxL)
 {
 //	cout << "Calculating potential order parameters\t";
+	// clear the order-parameter arrays
 	for (int i=0; i<(2*MAX_TRUNC+2)*(2*MAX_TRUNC+4)/8; i++) 
 	{
 		OP[i]=0;
 		SOP[i]=0;
 	}
+	// no potential: isotropic distribution, only the L=0 order parameter is non-zero
 	if(Lmax==0)
 	{
 		OP[0]=1.0;
@@ -191,10 +265,12 @@ void Potential::CalculateOP(int MaxL)
 		return;
 	}
 
+	// loop over the angular grid; the number of gamma points shrinks near the poles (cos(beta) near 1)
 	for(double cosbeta=0; cosbeta<=1; cosbeta+=1/((double)INT_NET))
 	{
 		double beta=acos(cosbeta);
 
+		// number of gamma points for this beta (marked experimental in the trailing comment)
 		int int_net_fi=(int)(INT_NET_FI*sin(beta))+1;		// experimental!
 //		int int_net_fi=INT_NET_FI;
 	  for(double gamma=0; gamma<=PI/2; gamma+=PI/(2*int_net_fi))
@@ -212,6 +288,7 @@ void Potential::CalculateOP(int MaxL)
 			double ro2=exp(ro);
 			ro=exp(0.5*ro);
 //			cout << ro << " " << ro2 <<endl;
+			// accumulate each order parameter as the Wigner function times the weight, for exp(ro) and exp(ro/2)
 			for( int L=0; L<=2*MaxL; L+=2 )
 			  for( int K=0; K<=L; K+=2 )
 				if((!isAxial)||(K==0))
@@ -240,10 +317,14 @@ void Potential::CalculateOP(int MaxL)
 }
 
 
+// Constructor: an axial potential (isAxial=true) with Lmax=0; coefficients, variate flags and order parameters set to zero.
+// Used by: implicit construction of the member MFPotential of MagneticParameters.
 Potential::Potential()
 {
+		// initial state: axial potential of rank 0
 		isAxial=true;
 		Lmax=0;
+		// clear the coefficients, variate flags and order parameters
 		for (int i=0; i<(MAX_POT+2)*(MAX_POT+4)/8; i++) 
 		{
 			A[i]=0;
@@ -255,23 +336,32 @@ Potential::Potential()
 			SOP[i]=0;
 		}
 }
+// Writes the diagnostic file potentialN.out (N=MyCount): the potential coefficients with their variate flags, the order
+// parameters OP(L,K) with the difference to the Gauss-rule value OP2 as error estimate, SOP(L,K), the XLK coefficients
+// and, for each jump axis, OP_JUMP_P and OP_JUMP_M with their Gauss-rule differences.
+// Used by: Discrepancy (Discrepancy.cpp), for every Liouville particle at every evaluation.
 void Potential::PrintOut(int MaxL)
 {
+	// open the output file named after the particle number
 	FILE *potout;
     char buff[MAX_STRLEN];
     sprintf(buff, "potential%d.out", MyCount);
 
 	potout=fopen(buff, "w");
+		// potential coefficients with their variate flags
 		for(int L=2; L<=Lmax; L+=2)
 			for(int K=0; K<=L; K+=2)
 				fprintf(potout, "Potential(%d, %d)=%lf; %d\n", L, K, this->Get(L, K), this->GetVF(L, K));
+		// order parameters, with the Gauss/Kronrod difference as error estimate, and the square-root order parameters
 		for(int L=0; L<=2*MaxL; L+=2)
 			for(int K=0; K<=L; K+=2)
 				fprintf(potout, "OP(%2d, %2d)=%lf +- %e ,\t SOP(%d, %d)=%lf\n", L, K, this->GetOP(L, K), fabs(OP2[L*(L+2)/8+K/2]-this->GetOP(L, K)), L, K, this->GetSOP(L, K, 0));
+		// XLK coefficients (real and imaginary parts)
 		for(int L=2; L<=2*Lmax; L+=2)
 			for(int K=-L; K<=L; K+=1)
 				fprintf(potout, "XLK(%d, %d)=%lf  %lf\n", L, K, real(this->GetXLK(L, K, 0)), imag(this->GetXLK(L, K, 0)));
 
+// order parameters of the discrete-jump model for each jump axis
 for(int i=0; i<MagneticParameterParent->NJumpAxes; i++)
 {
 	fprintf(potout, "\n\n\nJUMP DIFFUSION for axis %d\n\n", i);
@@ -285,9 +375,12 @@ for(int i=0; i<MagneticParameterParent->NJumpAxes; i++)
 
 }
 
+	// close the output file
 	fclose(potout);
 }
 
+// Destructor: nothing to release.
+// Used by: implicit destruction of MagneticParameters objects that hold MFPotential.
 Potential::~Potential()
 {}
 
@@ -296,9 +389,16 @@ Potential::~Potential()
 
 
 
+// Computes the same quantities as CalculateOP, but integrates over the full ranges cos(beta) in [-1,1] and gamma in
+// [0,2*pi] with a 50-point Gauss / 101-point Kronrod rule in each variable. OP and SOP use the Kronrod weights; OP2 and
+// SOP2 use the embedded Gauss weights, so that OP-OP2 estimates the integration error (printed by PrintOut). All arrays are
+// normalised to their L=0 value, and Normalization_OP keeps the unnormalised OP(0,0), which CalculateOP_Jumps_GK needs.
+// MaxL: the order parameters are computed for L up to 2*MaxL.
+// Used by: MagneticParameters::Arg2Par (RWMagnetic.cpp), for Liouville particles, at every evaluation.
 void Potential::CalculateOP_GK(int MaxL)
 {
 //	cout << "Calculating potential order parameters\t";
+	// clear all order-parameter arrays
 	for (int i=0; i<(MAX_TRUNC+2)*(MAX_TRUNC+4)/8; i++) 
 	{
 		OP[i]=0;
@@ -307,6 +407,7 @@ void Potential::CalculateOP_GK(int MaxL)
 		OP2[i]=0;
 		SOP2[i]=0;
 	}
+	// no potential: isotropic distribution, only the L=0 order parameters are non-zero
 	if(Lmax==0)
 	{
 		OP[0]=1.0;
@@ -318,6 +419,7 @@ void Potential::CalculateOP_GK(int MaxL)
 		return;
 	}
 
+	// Gauss-Kronrod rule on [-1,1]: nodes and Kronrod and Gauss weights (the Gauss weight is 0 at the nodes that belong only to the Kronrod rule)
 	int GaussNodes=50; int KronrodNodes=101; 
 	double Node[101], KronWeight[101], GausWeight[101];
 
@@ -425,6 +527,7 @@ void Potential::CalculateOP_GK(int MaxL)
 
 
 
+	// double loop over the nodes in cos(beta) and gamma (gamma=(node+1)*pi maps [-1,1] to [0,2*pi])
 	for(int ibeta=0; ibeta<KronrodNodes; ibeta++)
 	{
 		double cosbeta=Node[ibeta];
@@ -446,6 +549,7 @@ void Potential::CalculateOP_GK(int MaxL)
 			double ro2=exp(ro);
 			ro=exp(0.5*ro);
 //			cout << ro << " " << ro2 <<endl;
+			// accumulate Kronrod-weighted (OP, SOP) and Gauss-weighted (OP2, SOP2) integrals of Re D^L_0K times the weight
 			for( int L=0; L<=2*MaxL; L+=2 )
 			  for( int K=0; K<=L; K+=2 )
 				if((!isAxial)||(K==0))
@@ -485,11 +589,19 @@ void Potential::CalculateOP_GK(int MaxL)
 
 
 
+// Computes, for every jump axis i (MagneticParameterParent->NJumpAxes) of the discrete-jump model, the order parameters
+// OP_JUMP_P and OP_JUMP_M (index L*L/4+K, even L up to 2*MaxL, K=0..L) and the Gauss-rule copies OP_JUMP_P2 and OP_JUMP_M2.
+// The weight at each orientation is exp(0.5*(U+U')) where U is the potential and U' the same potential rotated about the
+// jump axis (JumpAxisFi, JumpAxisTeta) by +JumpAngle (P) or -JumpAngle (M); the integration is the Gauss-Kronrod rule of
+// CalculateOP_GK and the result is divided by Normalization_OP, so CalculateOP_GK must have been called first.
+// Used by: Discrepancy (Discrepancy.cpp), for every Liouville particle at every evaluation.
 void Potential::CalculateOP_Jumps_GK(int MaxL)
 {
+// repeat for every jump axis
 for(int i=0; i<MagneticParameterParent->NJumpAxes; i++)
 {
 //	cout << "Calculating potential order parameters\t";
+	// clear the jump order parameters of this axis
 	for (int j=0; j<(MAX_TRUNC)*(MAX_TRUNC); j++) 
 	{
 		OP_JUMP_P[i][j]=0;
@@ -498,6 +610,7 @@ for(int i=0; i<MagneticParameterParent->NJumpAxes; i++)
 		OP_JUMP_P2[i][j]=0;
 		OP_JUMP_M2[i][j]=0;
 	}
+	// no potential: only the L=0 order parameter is non-zero (this return leaves the function for all axes)
 	if(Lmax==0)
 	{
 		OP_JUMP_P[i][0]=1.0;
@@ -509,6 +622,7 @@ for(int i=0; i<MagneticParameterParent->NJumpAxes; i++)
 		return;
 	}
 
+	// Gauss-Kronrod rule on [-1,1]: nodes and Kronrod and Gauss weights (the Gauss weight is 0 at the nodes that belong only to the Kronrod rule)
 	int GaussNodes=50; int KronrodNodes=101; 
 	double Node[101], KronWeight[101], GausWeight[101];
 
@@ -614,11 +728,13 @@ for(int i=0; i<MagneticParameterParent->NJumpAxes; i++)
 		Node[ 49]=   9.9886640442007105018545944497421851e-01; KronWeight[ 49]=1.4201102381663570584892416091048193e-03; GausWeight[ 49]=2.9086225531551409584007243428554808e-03;
 		Node[100]=   9.9981190136436471898752764191979778e-01; KronWeight[100]=5.0676166803489136800323005679418875e-04; GausWeight[100]=0                                       ;
 
+	// direction (fi, teta) of the jump axis and jump angle alpha of this axis
 	double fi=		MagneticParameterParent->JumpAxisFi[i];
 	double teta=	MagneticParameterParent->JumpAxisTeta[i];
 	double alpha=	MagneticParameterParent->JumpAngle[i];
 
 
+	// double loop over the nodes in cos(beta) and gamma (gamma=(node+1)*pi maps [-1,1] to [0,2*pi])
 	for(int ibeta=0; ibeta<KronrodNodes; ibeta++)
 	{
 		double cosbeta=Node[ibeta];
@@ -629,6 +745,7 @@ for(int i=0; i<MagneticParameterParent->NJumpAxes; i++)
 	    double gamma=(Node[igamma]+1.0)*PI;
 		std::complex<double> ro_m, ro_p;
 		std::complex<double> sum_p=0, sum_m=0;
+		// exponent at this orientation: the potential plus the potential rotated by +alpha (_p) or -alpha (_m) about the jump axis, summed over l and k
 		for (int l=0; l<=Lmax; l+=2)
 		{
 // calculating ro=potential!
@@ -670,6 +787,7 @@ for(int i=0; i<MagneticParameterParent->NJumpAxes; i++)
 		ro_p=exp(0.5*sum_p);
 		ro_m=exp(0.5*sum_m);
 //			cout << ro_p << " " << ro_m <<endl;
+			// accumulate the conjugate Wigner function times the weight: Kronrod weights for OP_JUMP_P and OP_JUMP_M, Gauss weights for the copies
 			for( int L=0; L<=2*MaxL; L+=2 )
 			  for( int K=0; K<=L; K++ )
 				{
@@ -687,6 +805,7 @@ for(int i=0; i<MagneticParameterParent->NJumpAxes; i++)
 	  
 // normalization:
 //	  cout << MaxL << endl;
+	  // divide by the unnormalised OP(0,0) stored by CalculateOP_GK
 	  for (int j=0; j<(2*MaxL+2)*(2*MaxL+2)/4; j++) 
 	  {
 		OP_JUMP_P [i][j]/=Normalization_OP;

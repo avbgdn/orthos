@@ -18,6 +18,13 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+// SphericalTensor.h: declares class SphericalTensor, which stores a symmetric 3x3 Cartesian tensor (g, hyperfine, dipolar,
+// line width, diffusion) as its spherical components T(l,m) with l=0,2 and rotates it by Euler angles, and declares
+// InitializeSpinMatrices, which fills the global spin-operator matrices. Both are defined in SphericalTensor.cpp.
+// Used by: BiradicalODF.h (members Fmg1, Fmg2, FmA1, FmA2, FmD, FmW, FmR of MagneticParameters), SpinMatrixB.h (member Fdu
+// of SpinInteractionB), and directly by LiouvilleMatrixElementB.cpp, LiouvillianB.cpp, main.cpp, SphericalTensor.cpp and
+// SpinMatrixBiradicals.cpp.
+
 #ifndef SPHERICALTENSOR_H
 
 #define SPHERICALTENSOR_H
@@ -39,8 +46,12 @@ using namespace Eigen;
 using namespace std;
 
 
+// fills the global spin matrices Sx..Im; defined in SphericalTensor.cpp, called by the A-matrix builders in SpinMatrixBiradicals.cpp
 void InitializeSpinMatrices();
 
+// SphericalTensor: the components T00, T1_1..T11 and T2_2..T22 of a tensor in the spherical basis (T1_1 means T(1,-1)). The
+// constructors fill only rank 0 and rank 2 from a symmetric Cartesian matrix; the rank-1 components stay zero. Name is a
+// label used when the tensor is printed.
 class SphericalTensor
 {
 // TODO: 

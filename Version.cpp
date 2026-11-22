@@ -18,8 +18,16 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+// Program version of Orthos. Version() records the current version string in a small text file named
+// version in the working directory; the history of changes is kept as comments inside the function.
+// Used by: main.cpp (main calls Version once at start-up).
+
 #include "BiradicalODF.h"
 
+// Writes the program version string (Orthos version and its date) to the file version in the working
+// directory; the comment block inside the function is the change log of the program.
+// No inputs or outputs.
+// Used by: main() in main.cpp, called once at start-up (by every process when MPI is used).
 void Version(void)
 {
 ////////////////////////////	Program version		/////////////////////////////
@@ -63,8 +71,10 @@ void Version(void)
 //  03/05/2023   - fixed bugs with isotropic hyperfine
 //
 
+	// Version string of the current release
 	char ProgramVersion[MAX_STRLEN];
 	strcpy(ProgramVersion, "Orthos v2.0, 03/05/2023");
+	// Write the version string to the file named version
 	std::fstream prog_vers;
 	prog_vers.open("version", std::fstream::out);
 	prog_vers << ProgramVersion << endl;

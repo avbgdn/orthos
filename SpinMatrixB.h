@@ -18,12 +18,22 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+// SpinMatrixB.h: declares the spin-operator part of the biradical Spin Hamiltonian in the spherical-tensor form: the class
+// InteractionSphericalTensorB (the 36x36 spin matrices A(l,m) of one interaction), the struct SpinInteractionB (one
+// interaction: its spin matrices together with its spherical tensor Fdu) and the builders of the A(l,m) matrices. The spin
+// space is two electron spins S=1/2 and two nuclear spins I=1 (2*3*2*3=36 states). All definitions are in
+// SpinMatrixBiradicals.cpp.
+// Used by: BiradicalODF.h (member Interactions of MagneticParameters), LiouvilleMatrixElementB.h and, through it,
+// LiouvilleMatrixElementB.cpp and LiouvillianB.cpp; SpinMatrixBiradicals.cpp.
 #ifndef SPINMARIXB_H
 
 #define SPINMARIXB_H
 
 #include "SphericalTensor.h"
 
+// InteractionSphericalTensorB: the spin-operator matrices of one interaction, AL0 (one matrix, rank 0) and AL2 (five
+// matrices, rank 2, m=-2..2), each 36x36; Set fills them by calling one of the builders declared below, and GetElement
+// returns elements of the corresponding Liouville-space superoperator.
 class InteractionSphericalTensorB
 {
 private:
@@ -42,12 +52,20 @@ public:
 };
 
 
+// SpinInteractionB: one term of the Spin Hamiltonian: AuL holds its spin matrices and Fdu its spherical tensor (the
+// orientation-dependent part). MagneticParameters::Interactions holds six of them: g1, g2, A1, A2, DJ and the Lorentzian
+// line width.
 struct SpinInteractionB
 {
 	InteractionSphericalTensorB AuL;
 	SphericalTensor Fdu;
 };
 
+// Builders of the spin matrices A(l,m) of the six interactions (definitions in SpinMatrixBiradicals.cpp): electron Zeeman
+// term of electron 1 (Ag1L) and 2 (Ag2L), hyperfine coupling of electron 1 with nucleus 1 (AA1L) and electron 2 with
+// nucleus 2 (AA2L), electron-electron coupling (ADL) and the Lorentzian line width (AWLB); they are passed to
+// InteractionSphericalTensorB::Set as function pointers. StartingVectorSpinB gives the spin part of the starting vector,
+// delta is the Kronecker delta and PSMB gives an element of the commutator superoperator of a 36x36 matrix.
 Matrix<std::complex<double>, 36, 36> Ag1L( int l, int m , double B0);
 Matrix<std::complex<double>, 36, 36> AA1L( int l, int m , double B0);
 Matrix<std::complex<double>, 36, 36> AWLB( int l, int m , double B0);

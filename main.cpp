@@ -18,6 +18,15 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+// main.cpp: program entry point of Orthos. It reads the run control (name.nam), the magnetic parameters, the
+// orientation distribution and the experimental spectra, prepares the orientation integration nets and the
+// Wigner 3j table, and then either fits the variated parameters to the experimental spectra (NL2SOL or an NLopt
+// algorithm, with the objective evaluated by Discrepancy in Discrepancy.cpp) or only calculates the spectra,
+// and finally writes the spectra and the parameter files. With MPI, rank 0 runs this sequence and the other
+// ranks serve it in the worker loop at the end of main.
+// Used by: nothing in this code base (main is called at program start); the globals defined here (MpiRank, MpiSize,
+// MinimizationFlag, SpectrumSum, cov) are read by the other source files through extern declarations.
+
 #include <iostream>
 #include <complex>
 #include <cmath>
@@ -41,19 +50,27 @@
 //The library, which contains minimizer NL2SOL
 // #pragma comment(lib, "FortranLibrary64.lib")
 
+// rank of this MPI process and number of processes (0 and 1 without MPI); read by BasisB.cpp, Discrepancy.cpp,
+// IntegratedSpectrum.cpp, LiouvillianB.cpp, ReadExperimental.cpp and VoitlanderIntegration.cpp
 int MpiRank, MpiSize;
+// 1 if name.nam requests a minimisation (set in ReadName in ReadNamenam.cpp), otherwise 0; also read by BiradicalTransitions.cpp
 int MinimizationFlag;
+// points to the data block (parameters and experimental spectra) that the MPI worker loop at the end of main passes
+// to Discrepancy; Discrepancy.cpp declares it extern but does not use it
 DataForCalculation *p_additionaldata;
 
 // The file for writing time consumption of the program
 extern std::fstream timing;
 
+// covariance matrix of the fitted parameters: filled in main from the NL2SOL result, read by WriteOutput in ReadExperimental.cpp
 double cov[MAX_ARG][MAX_ARG];		// covariance matrix
 
 // the objective function for minimization with NLOpt library optimization algorithms
+// defined in Discrepancy.cpp; passed to nlopt_set_min_objective in main
 double myfunc(unsigned n, const double *x, double *grad, void *my_func_data);
 
 // the objective function for minimization with NL2SOL algorithm
+// defined in Discrepancy.cpp; passed to NL2SOL (nl2sno_) in main as the routine that evaluates the residuals
 void *madr(int* N, int* P, double* X, int* NF, double* R, int* UIPARM, double* URPARM, void* UFPARM, int* IV);
 
 // DECLARATION OF FUNCTIONS WITHIN NL2SOL library:
@@ -66,6 +83,9 @@ void *madr(int* N, int* P, double* X, int* NF, double* R, int* UIPARM, double* U
 #endif
 
  // COMMON BLOCKS FOR NL2SOL:
+// Common blocks of NL2SOL holding its step size and bound, convergence tolerances, error-estimate control and
+// stop-request flag: main sets them before calling NL2SOL, and madr (Discrepancy.cpp) sets KCONTROL when a file
+// named stop exists
 #ifdef __linux
   extern "C"
   {  
@@ -150,15 +170,20 @@ void *madr(int* N, int* P, double* X, int* NF, double* R, int* UIPARM, double* U
 
 // #include <direct.h>
 
+// spectra of every particle, orientation and field point (see the description where it is allocated below):
+// defined here, filled in Discrepancy.cpp and read by WriteOutput in ReadExperimental.cpp
 extern double ***SpectrumSum;
 double ***SpectrumSum;
 
+// declared but neither defined nor called anywhere in this code base (the Liouvillian routine is CalculateLiouvillianB)
 extern void CalculateLiouvillian();
 
 // The main function of the program
+// Used by: nothing in this code base (called by the C runtime at program start). Returns 0.
 int main(int argc, char** argv)
 {
 	
+// start MPI and find the rank of this process and the number of processes, or run as a single process
 #ifdef __MPI
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &MpiRank);
@@ -173,6 +198,7 @@ int main(int argc, char** argv)
 	char magnetic_in_filename[MAX_STRLEN], ODF_in_filename[MAX_STRLEN];
 	char magnetic_out_filename[MAX_STRLEN], ODF_out_filename[MAX_STRLEN];
 
+	// NParticles: number of paramagnetic particles; R: residual vector buffer; CovarianceCalculated: set when NL2SOL returns a covariance matrix
 	int NParticles;
 	double *R;
 	bool CovarianceCalculated=false;
@@ -180,9 +206,11 @@ int main(int argc, char** argv)
 //	getcwd(buffer, MAX_STRLEN);
 //	cout << buffer << endl;
 //
+	// start the CPU timer used for the final timing report
 	clock_t ct_time;
 	ct_time=clock();
 
+	// print the start time (rank 0 also prepares the timing, discrepancy and transitions files)
 	time_t rawtime;
     struct tm * timeinfo;
     time ( &rawtime );
@@ -268,8 +296,11 @@ int main(int argc, char** argv)
 			MagneticParameter[i].fs     =MagneticParameter[0].fs;
 
 
+			// an amplitude factor tied (flag 10 or more) to that of another particle is stored as the ratio to it
 			if(MagneticParameter[i].AmplitudeFactorVF>=10)
 				MagneticParameter[i].AmplitudeCoefficient=MagneticParameter[i].AmplitudeFactor/MagneticParameter[MagneticParameter[i].AmplitudeFactorVF-10].AmplitudeFactor;
+			// a hyperfine constant tied (flag 10 or more) to that of another particle is stored as the ratio to it; if that
+			// particle has no such nucleus a warning is printed and the tie is removed
 			for(int k=0; k<MagneticParameter[i].HyperfineCount; k++)
 			{
 				if(MagneticParameter[i].HFS[k].HFConstantVF>=10)
@@ -284,9 +315,13 @@ int main(int argc, char** argv)
 				}
 			}
 		}
+		// build the magnetic field axis of this particle
 		MagneticParameter[i].GenerateFieldNet();
 	}
 // Conformation analysis:
+	// a particle whose ConformerGroup names another particle becomes a member of that conformer group: the host
+	// counts it in NConformers and lists it in ConformerGroupMembers, and the member takes over the basis truncation and
+	// the Gaussian line width of the host (its own NConformers is set to 0); invalid requests are ignored with a warning
 	for(int i=0; i<NParticles; i++)
 	{
 		if(MagneticParameter[i].ConformerGroup != MagneticParameter[i].Count)
@@ -349,8 +384,10 @@ int main(int argc, char** argv)
 //      k-th point of the spectrum
 //	Thus, the dimensionality of SpetrumSum[][][] is NParticles*NOrientations*NPoints
 	SpectrumSum=new double**[NParticles];
+	// residual vector buffer, used below only for the single Discrepancy evaluation when no minimisation algorithm is recognised
 	R=new double[ODF[0].NOrientations * MagneticParameter[0].NPoints];
 
+	// allocate the spectrum storage of every particle and orientation
 	for(int j=0; j<NParticles; j++)
 	{
 		SpectrumSum[j]=new double* [ODF[0].NOrientations];
@@ -405,6 +442,7 @@ int main(int argc, char** argv)
 //		printf("%lf   %lf \n", psi, ODF[0].ODF_value(0, PI/2, psi));
 //	return 0;
 
+	// values and bounds of the variated parameters, filled by Par2Arg below
 	double Arguments[MAX_ARG];
 	double lb[MAX_ARG], ub[MAX_ARG];
 
@@ -455,11 +493,15 @@ int main(int argc, char** argv)
 	additionaldata.NParticles=NParticles;
 
         p_additionaldata=&additionaldata;
+	// without minimisation no parameter is variated
 	if(MinimizationFlag == 0) NArg=0;
 
+   // rank 0 runs the minimisation (or the single calculation) and writes the results; the other ranks
+   // serve it in the worker loop at the end of main
    if(MpiRank==0)
    {
 
+    // report which spectra or integration nodes each process calculates
     for (int i=0; i<MpiSize; i++)
 	{
 		cout << "Process " << i << " calculating:\n";
@@ -476,6 +518,7 @@ int main(int argc, char** argv)
                      }
 	}
 	cout << endl;
+	// report the variated parameters with their bounds
 	std::cout << "Argument count: " << NArg << std::endl;
     for(int i=0; i<NArg; i++)
 		std::cout << "Argument " << i << ": " << lb[i] << " < " << Arguments[i] << " < " << ub[i] << std::endl;
@@ -492,11 +535,13 @@ int main(int argc, char** argv)
 		std::cout << "Algorithm NL2SOL\n";
 	if(MinimizationFlag != 1) NArg=0;
 
+	// NL2SOL: N residuals (points of all spectra) and P variated parameters; iv and v are its integer and real work arrays
 	int N=ODF[0].NOrientations * MagneticParameter[0].NPoints, P=NArg;
 	int* iv;
 	double* v;
 	iv=new int[60+P];
 	v=new double[93+P*N+3*N+P*(3*P+33)];
+// set the NL2SOL step, convergence tolerances and error-estimate control through its common blocks (names differ between Linux and Windows)
 #ifdef __linux
 	stepj_.STEPJAC=MagneticParameter[0].InitialStep;
 	stepj_.STEPBOUND=1.0;
@@ -516,6 +561,7 @@ int main(int argc, char** argv)
 	KEYERR.keyErr=3;    // Calculate errors!
 	KCTRL.KCONTROL=0;
 #endif
+	// clear the NL2SOL work arrays
 	for(int i=0; i<60+P; i++) iv[i]=0;
 	for(int i=0; i<93+P*N+3*N+P*(3*P+33); i++) v[i]=0.0;
 
@@ -523,19 +569,24 @@ int main(int argc, char** argv)
 	double urparm[1];
 	void *ufparm=(void*)(&additionaldata); 
 
+// load the NL2SOL default settings into iv and v
 #ifdef __linux
 	dfault_(iv, v);
 #else
 	DFAULT(iv,v); 
 #endif
+   	// set the entries iv[0] and iv[20] of the NL2SOL control array (their meaning is defined by NL2SOL)
    	iv[0]=12; 
    	iv[20]=2;
+// run NL2SOL: it calls madr (Discrepancy.cpp) to evaluate the residuals and updates Arguments
 #ifdef __linux
 	nl2sno_(&N,&P,Arguments,&madr,iv,v,uiparm,urparm,ufparm);
 #else
 	NL2SNO(&N,&P,Arguments,&madr,iv,v,uiparm,urparm,ufparm);
 #endif
 
+	// iv[25] is the index in v of the covariance matrix (packed lower triangle); if it is not positive no covariance is
+	// available, otherwise it is unpacked into cov and written to covariance.out with the parameter errors and the correlations
 	if (iv[25]<=0)
 		printf("Hessian is indefined, iv[25]=%d .\n", iv[25]);
 	else
@@ -568,6 +619,8 @@ int main(int argc, char** argv)
 	else
 	{
 
+	// choose the NLopt algorithm by its name in the parameter file and give it the parameter bounds; an unknown name
+	// only evaluates the discrepancy once at the starting parameters and jumps to end_calc
 	if(!strcmp(MagneticParameter[0].NLOptAlgorithm, "DIRECT"))
 	{
 		std::cout << "Algorithm DIRECT-L\n";
@@ -625,6 +678,7 @@ int main(int argc, char** argv)
 		goto end_calc;
 	}
 //	opt = nlopt_create(NLOPT_LN_BOBYQA , NArg); /* algorithm and dimensionality */
+	// the objective is myfunc (Discrepancy.cpp); set tolerances and the initial step
 	nlopt_set_min_objective(opt, myfunc, &additionaldata);
 	nlopt_set_xtol_rel(opt, MagneticParameter[0].XTol);
 	nlopt_set_ftol_rel(opt, MagneticParameter[0].FTol);
@@ -634,6 +688,7 @@ int main(int argc, char** argv)
 
 	double minf;
 
+	// run the optimiser and report the minimum found
 	if (nlopt_optimize(opt, Arguments, &minf) < 0) 
 	{
 		printf("nlopt failed!\n");
@@ -648,8 +703,10 @@ int main(int argc, char** argv)
 // END OF NLOPT MINIMIZATION
 //	std::cout << "Discrepancy:" << Discrepancy(additionaldata.ExpSpectra, additionaldata.MagneticParameter, additionaldata.ODF, Arguments) << std::endl;
 
+// target of the goto in the unknown-algorithm branch above
 end_calc:
 
+   // report the total CPU time
    std::cout << "Calculation time: " << (float)(clock()-ct_time)/CLOCKS_PER_SEC << " sec." << std::endl;
 
 /*   for(int i=0; i<MagneticParameter->NPoints; i++)
@@ -670,8 +727,10 @@ end_calc:
 		MagneticParameter[k].ConvertAnglesToDegrees();
 	}
     
+    // write the final spectra and parameters; parameter errors are reported only if a covariance matrix was calculated
     if(!CovarianceCalculated)	WriteOutput(NParticles, ExpSpectra, SpectrumSum, MagneticParameter, ODF, 0,  Arguments);
 	else						WriteOutput(NParticles, ExpSpectra, SpectrumSum, MagneticParameter, ODF, NArg, Arguments);
+	// create (empty) the output parameter files and write the parameters of each particle to them
 	FILE *outfile;
 	outfile=fopen(magnetic_out_filename, "w");
 	fclose(outfile);
@@ -690,6 +749,7 @@ end_calc:
 		MagneticParameter[k].ConvertAnglesToRadians();
 	}
 
+	// append a legend of the variate flags and of the algorithm keywords to the magnetic parameter file
 	outfile=fopen(magnetic_out_filename, "a+");
 		fprintf(outfile, "\nVariateFlags:");
 		fprintf(outfile, "   1 - variate independently\n");
@@ -710,6 +770,7 @@ end_calc:
 		fprintf(outfile, "\nTo safely stop the calculation on the current iteration, create the file named \"stop\" in the working directory\n");
 	fclose(outfile);
 
+        // tell the worker ranks, waiting in their loop, that the calculation is finished
         int flag_end=1;
 #ifdef __MPI
         MPI_Bcast(&flag_end, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -719,6 +780,8 @@ end_calc:
     else     // if (MpiRank!=0)
     {
 #ifdef __MPI
+      // worker ranks: wait for the master to announce new parameters, receive them and calculate their share of the
+      // discrepancy (the matching broadcasts on the master side are in madr and myfunc in Discrepancy.cpp), until the end flag arrives
       while(1)
       {
 // receive next data?
@@ -740,10 +803,12 @@ end_calc:
       }
 #endif
     }
+// shut MPI down
 #ifdef __MPI
     MPI_Finalize();
 #endif
 
+	// delete the stop-request file, if any, so that the next run does not stop at once
 	remove ("stop");
 	return 0;
 }

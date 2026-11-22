@@ -23,6 +23,11 @@
 // Individual spectra for all biradical orientations are integrated with orientation distribution function,
 // to give the "powder" spectrum.
 
+// File purpose: orientational (powder or ODF-weighted) average of the spectrum of one particle over all molecular
+// orientations, for the rigid limit and for the slow-motion (Liouville) case; the existing comment above says
+// rigid limit only, but CalculateIntegratedSpectrumLiouville() below also handles Liouville particles.
+// Used by: Discrepancy.cpp (Discrepancy() calls CalculateIntegratedSpectrumLiouville() when IntegrationNet>1);
+// IntegratedSpectrum.cpp itself uses VoitlanderIntegration.cpp and VoitlanderTriangleIntegrals.cpp for the Voitlander mesh.
 #include "BiradicalODF.h"
 #include "VoitlanderIntegration.h"
 #include <math.h>
@@ -30,6 +35,8 @@
 
 extern int MpiRank, MpiSize;
 
+// forward declarations of the three rigid-limit callbacks defined in VoitlanderTriangleIntegrals.cpp,
+// they are passed to IntegrateVoitlanderMesh() below
 void VoitlanderVertexEvalRigid(MagneticParameters *MagneticParameter, VoitlanderVertex *Vertex);
 void VoitlanderFreePayloadRigid(void *Payload);
 void VoitlanderTriangleIntegralRigid(VoitlanderVertex *V1, VoitlanderVertex *V2, VoitlanderVertex *V3,
@@ -43,14 +50,20 @@ void VoitlanderTriangleIntegralRigid(VoitlanderVertex *V1, VoitlanderVertex *V2,
 //    knowledge/epr_agents/orthos_sle_fwhm_voitlander_2026-11-02.md), so
 //    CalculateIntegratedSpectrumLiouville only calls this for !Liouville particles
 //    and falls through to its own existing grid otherwise
+// CalculateIntegratedSpectrumVoitlander: orientation average for a rigid-limit particle by the adaptive hemisphere
+// mesh; fills SpectrumSum[k][i] (k: spectrum number, i: field point) for the ODF components of ODF.
+// Used by: CalculateIntegratedSpectrumLiouville() in this file (when IntegrationMethod is INTEGRATE_VOITLANDER and the
+// particle is not in the Liouville regime).
 void CalculateIntegratedSpectrumVoitlander(MagneticParameters *MagneticParameter,
                                             OrderParameters *ODF,
                                             double **SpectrumSum)
 {
+    // clear the spectrum accumulator
     for(int i=0; i<MagneticParameter->NPoints; i++)
         for(int k=0; k<ODF->NOrientations; k++)
             SpectrumSum[k][i]=0;
 
+    // integrate over the hemisphere mesh, adding the ODF-weighted contribution of every triangle to SpectrumSum
     IntegrateVoitlanderMesh(MagneticParameter, ODF, VoitlanderVertexEvalRigid, VoitlanderFreePayloadRigid, VoitlanderTriangleIntegralRigid, SpectrumSum);
 
 // the mesh engine accumulates a raw solid-angle integral in steradians (every
@@ -68,6 +81,16 @@ void CalculateIntegratedSpectrumVoitlander(MagneticParameters *MagneticParameter
             SpectrumSum[k][i]*=MagneticParameter->AmplitudeFactor/(36.0*2.0*PI);
 }
 
+// CalculateIntegratedSpectrumLiouville: orientation average of the spectrum of one particle over the molecular
+// orientations (polar angle teta, azimuth ksi) by Gauss or Gauss-Kronrod quadrature, with each spectrum k weighted
+// by the orientation distribution function of that sample orientation (ODF->CurrentODF[k]). The orientation spectrum
+// is the rigid-limit lineshape sum or, for Liouville particles, the slow-motion spectrum of CalculateLiouvillianB().
+// If the Voitlander method is selected for a rigid-limit particle the work is passed on to
+// CalculateIntegratedSpectrumVoitlander() instead.
+// MagneticParameter: parameters of one particle; ODF: orientation distribution of that particle;
+// SpectrumSum: output [ODF->NOrientations][NPoints]. Under MPI each rank adds only its own share of the teta nodes,
+// the sum over ranks is done afterwards in Discrepancy(). A log file integr<particle>_<rank>.out is written.
+// Used by: Discrepancy() in Discrepancy.cpp, for every particle with IntegrationNet>1 (nothing else calls it).
 void CalculateIntegratedSpectrumLiouville(MagneticParameters *MagneticParameter,
 										  OrderParameters *ODF,
 										  double **SpectrumSum)
@@ -97,6 +120,7 @@ void CalculateIntegratedSpectrumLiouville(MagneticParameters *MagneticParameter,
 		SpectrumSumGauss[i]=new double[MagneticParameter->NPoints];
 	
 
+	// clear both spectrum accumulators
 	for(int i=0; i<MagneticParameter->NPoints; i++)
 		for(int k=0; k<ODF->NOrientations; k++)
 		{
@@ -104,6 +128,7 @@ void CalculateIntegratedSpectrumLiouville(MagneticParameters *MagneticParameter,
 			SpectrumSumGauss[k][i]=0;
 		}
 
+	// open the log file of this rank, with the integration net sizes in its header
 	std::fstream intfile;
 	char buff[MAX_STRLEN];
 
@@ -122,6 +147,7 @@ void CalculateIntegratedSpectrumLiouville(MagneticParameters *MagneticParameter,
 	for(int iteta=0; iteta<MagneticParameter->IntegrationNet; iteta++)
 #endif	
 	{
+	  // loop over the integration nodes in ksi (main.cpp sets IntegrationNetKsi=1 for Liouville particles)
 	  for(int iksi=0; iksi<MagneticParameter->IntegrationNetKsi; iksi++)
 	  {
 	  // Define integration angles and Euler angles Field->Molecule:
@@ -132,6 +158,7 @@ void CalculateIntegratedSpectrumLiouville(MagneticParameters *MagneticParameter,
 
 
 
+		  // ksi from the node mapped from [-1,1] to [0,2*PI], cos(teta) taken directly from the node
 		  double ksi=PI*(MagneticParameter->NodeKsi[iksi]+1.0);
 		  double costeta=MagneticParameter->Node[iteta];
 		  double teta=acos(costeta);
@@ -142,6 +169,7 @@ void CalculateIntegratedSpectrumLiouville(MagneticParameters *MagneticParameter,
 
 		if(!(MagneticParameter->Liouville))		// rigid limit
 		{
+		  // rotation matrix from the Euler angles field->molecule, then transitions and lineshape sum for this orientation
 		  RotMat=RotationMatrix(Field_to_Molecule_Euler);
 		  if(!(MagneticParameter->isMonoradical))
 		  {
@@ -162,6 +190,7 @@ void CalculateIntegratedSpectrumLiouville(MagneticParameters *MagneticParameter,
 		}
 		else		 // Liouvillian calculation
 		{
+			// slow-motion spectrum for this teta, by solving the Liouville-space problem over the whole field net
 			Matrix<double, Dynamic, 1> SpectrumL;
 			SpectrumL.resize(MagneticParameter->NPoints , 1);		
 // the basis vectors are generated from L,M,K truncation values and selection rules.
@@ -178,6 +207,7 @@ void CalculateIntegratedSpectrumLiouville(MagneticParameters *MagneticParameter,
 		  for(int k=0; k<ODF->NOrientations; k++)
 			  for(int i=0; i<MagneticParameter->NPoints; i++)
 			  {
+			    // Gauss-Kronrod: add with Kronrod weights (result) and with Gauss weights (only written to the log file); otherwise add with Gauss weights
 			    if(MagneticParameter->IntegrationMethod==INTEGRATE_GAUSSKRONROD)
 				{
 				  SpectrumSum[k][i]     +=(ODF->CurrentODF[k])*Spectrum[i]*MagneticParameter->KronWeight[iteta]*MagneticParameter->KronWeightKsi[iksi];
@@ -193,6 +223,7 @@ void CalculateIntegratedSpectrumLiouville(MagneticParameters *MagneticParameter,
 
 
 	  // Normalization:
+   // rigid-limit spectra are scaled by AmplitudeFactor/36 here, Liouville spectra are not rescaled in this function
    if(!(MagneticParameter->Liouville))
 	  for(int i=0; i<MagneticParameter->NPoints; i++)
 		   for (int k=0; k<ODF->NOrientations; k++)
@@ -204,6 +235,7 @@ void CalculateIntegratedSpectrumLiouville(MagneticParameters *MagneticParameter,
 // Output:
 
 
+	// write the spectra of all sample orientations (both weighted sums) to the log file
 	for (int k=0; k<ODF->NOrientations; k++)
    		for(int i=0; i<MagneticParameter->NPoints; i++)
 		{

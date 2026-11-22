@@ -18,6 +18,17 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+// LiouvillianB.cpp: computes the EPR spectrum of a slowly tumbling nitroxide (monoradical or biradical) at one
+// orientation of the director by solving the stochastic Liouville equation (SLE). CalculateLiouvillianB builds the
+// basis (BasisB.cpp), fills the sparse Liouvillian matrix element by element (LiouvilleMatrixElementB.cpp) and builds
+// the starting vector. The field-swept spectrum then follows from one Lanczos tridiagonalisation and a continued
+// fraction (Lanczos.cpp, functions Lanczos and CFVD). Finally the spectrum is
+// convoluted with a Gaussian line width using a cosine transform (FFTW). Pruning is an auxiliary routine
+// that selects a reduced basis.
+// Used by: Discrepancy.cpp and IntegratedSpectrum.cpp call CalculateLiouvillianB (declared in BiradicalODF.h).
+// The global flags defined here (FduReal, FduEven, FduAxial, DirectorParallel, ParticleCount, timing)
+// are read by BasisB.cpp.
+
 #include "BiradicalODF.h"
 #include "Eigen/Sparse"
 // #include "unsupported/Eigen/kroneckerProduct"
@@ -31,18 +42,26 @@
 
 // extern clock_t time_spin, time_diffusion, time_potential;
 
+// upper limit on the basis dimension: the size of the Basis and Basis1 arrays in CalculateLiouvillianB
 #define MAX_BASIS 200000
 #define VERBOSE 1
 //extern double B0;
 
+// Symmetry and model flags set in CalculateLiouvillianB before the basis is generated and read by GenerateBasisB and
+// GenerateBasisM in BasisB.cpp: FduReal, FduEven, FduAxial (symmetry of the spherical tensors, see GenerateBasisB),
+// DirectorParallel (director parallel to the field, psi=0).
 bool FduReal;
 bool FduEven;
 bool FduAxial;
 bool DirectorParallel;
+// true if every conformer of the group is a monoradical; set and used only in CalculateLiouvillianB (selects
+// GenerateBasisM, the M-symmetrised monoradical basis, instead of GenerateBasisB)
 bool IsGroupMonoradical;
+// timing log (timing.out); opened here in CalculateLiouvillianB by the master process and written by BasisB.cpp and main.cpp
 std::fstream timing;
 
 extern int MpiRank, MpiSize;
+// number of the particle being calculated; set in CalculateLiouvillianB, used by BasisB.cpp in the names of the basis listing files
 int ParticleCount;
 
 // Важные замечания: 
@@ -53,8 +72,16 @@ int ParticleCount;
 // Pruning routine.
 // The Stochastic Liouville equation is solved by conjugate gradient method in [nprunes] points of spectra separated by [dz] Gauss.
 // Only basis vectors, which contribute to the resulting spectrum, are selected and written to "pruneN.pru" file, where N is the number of spectrum.
+// Z is the Liouvillian, b the starting vector, ndim the basis dimension, basis the list of basis vectors, z0 the centre
+// field, nprune the number of field points spread symmetrically over a window of width dz around z0, and
+// PruningTolerance the threshold on the solution amplitude. At each field point the shifted system
+// (Z+i*(z0+z)*identity) x = b is solved iteratively (BiCGSTAB, not plain conjugate gradient), the amplitudes |x| of
+// all points are stored, and a basis vector is kept if its largest amplitude reaches PruningTolerance.
+// The amplitude table and the kept vectors (in the format read by LoadBasisB) are written to basis<MpiRank>.pru.
+// Used by: CalculateLiouvillianB in this file, only when NPrune of the particle is non-zero.
 void Pruning(SparseMatrix<std::complex<double> > &Z, const Matrix<std::complex<double>, Dynamic, 1> &b, int ndim, BasisVectorB *basis, double z0, int nprune, double dz, double PruningTolerance)
 {
+	// open the pruning output file of this MPI rank
 	std::fstream pruningfile;
         char buff[MAX_STRLEN];
         sprintf(buff, "basis%d.pru", MpiRank);
@@ -63,6 +90,7 @@ void Pruning(SparseMatrix<std::complex<double> > &Z, const Matrix<std::complex<d
 //	int nprune=1;
         if(!MpiRank)
 	timing << "Started pruning routine\n\n";
+	// work arrays: solution vector, amplitude table (basis vector by field point), identity, shifted matrix, iterative solver
 	Matrix<std::complex<double>, Dynamic, 1> x;
 	x.resize(ndim, 1);
 
@@ -74,6 +102,7 @@ void Pruning(SparseMatrix<std::complex<double> > &Z, const Matrix<std::complex<d
 	U.setIdentity();
 	BiCGSTAB<SparseMatrix<std::complex<double> > > solver;
 
+// solve the shifted SLE at each field offset z and store the solution amplitudes
 //	for(double z=-52.0; z<=52.0; z+=104.0/(nprune-1))
 	for(int i=0; i<nprune; i++)
 	{
@@ -87,9 +116,11 @@ void Pruning(SparseMatrix<std::complex<double> > &Z, const Matrix<std::complex<d
 		res.col(i)=x.cwiseAbs();
 		timing << i << ", rel.field=" << z << ", #iterations:     " << solver.iterations() << ", estimated error: " << solver.error() << std::endl;
 	}
+	// write the amplitude table to the pruning file
 	pruningfile << "Pruning result:\n";
 	pruningfile << res << endl << endl;
 	pruningfile << "Vectors:\n";
+	// keep every basis vector whose maximum amplitude over the field points reaches the tolerance, one line per vector
 	int npruned=0;
 	for(int i=0; i<ndim; i++)
 	{
@@ -111,8 +142,21 @@ void Pruning(SparseMatrix<std::complex<double> > &Z, const Matrix<std::complex<d
 //
 // The routine of spectrum modelling according Stochastic Liouville equatinon.
 //
+// Computes the first-derivative EPR spectrum of one orientation of the director for the particle (conformer group)
+// described by MagneticParameter. psi is the angle in radians between the director and the field (the director angle
+// of the spectrum; psi=0 selects the DirectorParallel rules). BasisSource is "truncation" or an empty string to
+// generate the basis from the truncation parameters, otherwise the name of a basis file read with LoadBasisB.
+// Returns a column vector of NPoints values on the field net MagneticParameter->FieldNet, scaled by
+// AmplitudeFactorAllConformers/PI. A particle with NConformers<1 (it belongs to the conformer group of another
+// particle, whose call covers it) gives zeros.
+// Steps: set the symmetry flags from the tensors, generate or read the basis, build the sparse Liouvillian from
+// matrix elements, build the starting vector, solve (Lanczos plus continued fraction), apply the Gaussian line broadening.
+// Used by: Discrepancy in Discrepancy.cpp (once per particle and spectrum orientation; the basis source from name.nam
+// for particle 0, "truncation" for the others) and CalculateIntegratedSpectrumLiouville in IntegratedSpectrum.cpp
+// (once per integration node, basis from truncation). Ordinary calls, not through a pointer.
 Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticParameter, double psi, char* BasisSource )
 {
+	// this particle has no spectrum of its own (it is a member of another particle conformer group): return zeros
 	if(MagneticParameter->NConformers<1)
 	{
 			int npoints=MagneticParameter->NPoints;
@@ -124,6 +168,7 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
 	}
 //	Matrix<std::complex<double>, 3, 3> g1, A1, g2, A2, W, DJ, R;
 //	double Diffusion_Type[3], R_Tau[3];
+	// CPU timer for the timing log
 	clock_t time;
 
 	time=clock();
@@ -156,6 +201,7 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
         sprintf(buff, "tridiag%d_%d.out", MagneticParameter->Count, MpiRank);
 	tridiagonalfile.open(buff, std::fstream::out);
 
+        // the master process opens the timing log and records entry into this routine
         if(!MpiRank)
 	timing.open("timing.out", std::fstream::app | std::fstream::out);
 
@@ -230,12 +276,15 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
 // Analyzing spherical tensors for symmetry
 //	FduReal, FduEven, FduAxial;
 
+	// with the director parallel to the field an extra quantity is conserved, which the basis generation uses
 	if(psi==0)	DirectorParallel=true;
 	else		DirectorParallel=false;
 	FduReal=true;
 	FduEven=true;
 	FduAxial=true;
 	IsGroupMonoradical=true;
+	// scan all conformers of the group: the group is monoradical only if all members are, and the tensors are tested for
+	// the FduReal, FduEven and FduAxial symmetries
 	for(int q=0; q<MagneticParameter->NConformers; q++)  // Conformation analysis:
 	{
 //		printf("q=%d, groupmember=%d\n", q, MagneticParameter->ConformerGroupMembers[q]);
@@ -244,6 +293,8 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
 
 		if (!(CurrentParameter->isMonoradical)) IsGroupMonoradical=false;
 
+		// print each of the six interaction tensors and test its l=2 spherical components: odd m breaks FduEven, any
+		// m not 0 breaks FduAxial, an imaginary part breaks FduReal
 		for(int i=0; i<6; i++)
 		{
 			CurrentInteraction[i].Fdu.PrintOut(tensorfile);
@@ -270,6 +321,7 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
 	timing << "Started basis generation!\n";
         if(!MpiRank)
         timing << "Calculation time: " << (float)(clock()-time)/CLOCKS_PER_SEC << " sec." << std::endl;
+	// allocate room for up to MAX_BASIS basis vectors (Basis1 is a second copy filled by the generators, not used afterwards)
 	Basis=(BasisVectorB*)malloc(MAX_BASIS*sizeof(BasisVectorB));
 	Basis1=(BasisVectorB*)malloc(MAX_BASIS*sizeof(BasisVectorB));
 
@@ -308,17 +360,20 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
 
 
 
+	// the Liouvillian is collected as (row, column, value) triplets; elements smaller than LiouvilleTruncation in modulus are dropped
 	std::vector< Eigen::Triplet<std::complex<double> > > tripletList;
 
 //	tripletList.reserve(NBasis*NBasis/5);
 
 	double LiouvilleTruncation=1.0e-5;
 
+	// element (j,i) is calculated for i>=j and stored at (j,i) and (i,j), so the matrix is complex symmetric
 	for(int j=0; j<NBasis; j++)
 		for(int i=j; i<NBasis; i++)
 		{
 			std::complex<double> liou, liou1, liou2;
 			std::complex<double> pot1, pot2;
+            // vectors of different conformers are coupled only by the conformational exchange term
             if(Basis[j].Q!=Basis[i].Q)
 			{
 				liou=MatrixElementConformation(Basis[j], Basis[i], MagneticParameter->ConversionRateR);
@@ -326,13 +381,18 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
 			else
 			{
 //			clock_t time_start=clock();
+				// same conformer: use the parameters of that conformer
 				CurrentParameter=&(MagneticParameter->MagneticParameterArray[MagneticParameter->ConformerGroupMembers[Basis[j].Q]]);
 
+				// element within one conformer: rotational diffusion term minus i times the spin interaction term (the six
+				// interactions g1, g2, A1, A2, DJ and the Lorentzian line width)
+				// a biradical conformer uses the unsymmetrised element family, a monoradical conformer the M-symmetrised one
 				if(!(CurrentParameter->isMonoradical))
 					liou=MatrixElementIsotropicBrownianB_ND(Basis[j], Basis[i], CurrentParameter->DiffusionR, CurrentParameter->DiffusionType, CurrentParameter->RTau)			-I*MatrixElementBSK1(Basis[j], Basis[i], CurrentParameter->Interactions, 6, psi, CurrentParameter->J2);
 				else
 					liou=MatrixElementIsotropicBrownianBSM_ND(Basis[j], Basis[i], CurrentParameter->DiffusionR, CurrentParameter->DiffusionType, CurrentParameter->RTau)		-I*MatrixElementBSM(Basis[j], Basis[i], CurrentParameter->Interactions, 6, psi, CurrentParameter->J2);
 
+				// add the conformational exchange and J diffusion terms
 				liou+=MatrixElementConformation(Basis[j], Basis[i], MagneticParameter->ConversionRateR);
 				liou+=MatrixElementJDiffusion(Basis[j], Basis[i], MagneticParameter->JDiffusionR);
 
@@ -379,6 +439,7 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
 //			time_inside+=(clock()-time_start);
 
 
+			// keep the element (mirrored across the diagonal) if it is large enough and log it in the liou file
 			if(abs(liou)>=LiouvilleTruncation)
 			{
 				tripletList.push_back(Eigen::Triplet<std::complex<double> >(j,i, liou));
@@ -397,6 +458,7 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
 		}
 //		clock_t time_start=clock();
 
+		// assemble the sparse Liouvillian from the triplets and free the triplet list
 		Eigen::SparseMatrix<std::complex<double> > Liou(NBasis, NBasis);
 
 		Liou.setFromTriplets(tripletList.begin(), tripletList.end());
@@ -413,6 +475,7 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
         if(!MpiRank)
 	timing << "Calculation time: " << (float)(clock()-time)/CLOCKS_PER_SEC << " sec." << std::endl;
 
+	// arrays for the starting vector and for the Lanczos coefficients (columns a and b of the tridiagonal matrix)
 	Matrix<std::complex<double>, Dynamic, 1> StartingVector;
     Matrix<std::complex<double>, Dynamic, 2> ab;
 	StartingVector.resize(NBasis, 1);
@@ -421,6 +484,9 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
 // constructing starting vector
     Matrix<std::complex<double>, 1296, 1> sv;
 	sv=StartingVectorSpinB();
+	// for each basis vector: sqrt(2L+1) times the equilibrium orientational component (GetSOP of the ordering potential,
+	// symmetrised in K, nonzero only for M=0), the square root of the amplitude factor and the spin starting vector
+	// component (StartingVectorSpinB, selected by SpinIndexB); vectors with N not 0 get zero
 	for(int i=0; i<NBasis; i++)
 	{
 		CurrentParameter=&(MagneticParameter->MagneticParameterArray[MagneticParameter->ConformerGroupMembers[Basis[i].Q]]);
@@ -450,6 +516,7 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
         if(!MpiRank)
 	timing << "Calculation time: " << (float)(clock()-time)/CLOCKS_PER_SEC << " sec." << std::endl;
 
+	// optional pruning: Pruning writes the reduced basis to a file and the calculation continues with the full basis
 	if(MagneticParameter->NPrune)	Pruning(Liou, 
 											StartingVector, 
 											NBasis, 
@@ -469,20 +536,27 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
 		LanczosSteps=NBasis;
 	}
 
+	// number of Lanczos steps actually done, smaller than LanczosSteps if the Krylov subspace closes early
 	int ActualSteps;
 	ab=Lanczos(Liou, StartingVector, LanczosSteps, NBasis, MagneticParameter, ActualSteps);
+	// note in the tridiagonal log that the Krylov subspace closed before the requested number of steps
 	if(ActualSteps<LanczosSteps)
 		tridiagonalfile << "Krylov subspace closed early at step " << ActualSteps << " of " << LanczosSteps
 						<< " requested: the residual vanished to machine precision (exact invariant" << endl
 						<< "subspace/eigenvector found), so the recursion was stopped instead of dividing by a near-zero pivot." << endl << endl;
+	// log the Lanczos coefficients
 	tridiagonalfile << "a, b vector: \n" << ab << endl << endl;
 
+	// number of field points and the spectrum array: column 0 holds the field, column 1 the derivative signal
 	int npoints=MagneticParameter->NPoints;
 	Matrix<double, Dynamic, 2> Spectrum;
 	Spectrum.resize(npoints, 2);
+
+	// continued fraction at every field point, evaluated from the Lanczos coefficients
 	Spectrum=CFVD(ab, LanczosSteps, MagneticParameter->CenterField, npoints, 0, MagneticParameter);
 
 //	FILE *SpecOut;
+    // write the spectrum (before Gaussian broadening) to the file spec, overwritten at every call
     fstream SpecOut;
 	SpecOut.open("spec", std::fstream::out);
 	SpecOut << Spectrum;
@@ -494,6 +568,8 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
         timing << "Calculation time: " << (float)(clock()-time)/CLOCKS_PER_SEC << " sec." << std::endl;
 
 // time for Fourier transform
+	// Gaussian broadening: the derivative spectrum is convoluted with a Gaussian of full width LWGauss (Gauss), which
+	// depends on the director angle psi through HGauss, by multiplying its cosine transform by the transform of the Gaussian
 	double LWGauss;
 // LWGauss=A+(B-A)*sin^2(psi)
 //     where A=HG_zz, B=HG_xx
@@ -505,10 +581,12 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
 		double *fftwin;
 		fftw_plan fftwp;
 
+		// allocate the FFTW buffer and plan an in-place DCT-I (FFTW_REDFT00)
 		fftwin = (double*) fftw_malloc(sizeof(fftw_complex) * npoints);
 
 		fftwp=fftw_plan_r2r_1d(npoints, fftwin, fftwin,
 						 FFTW_REDFT00, FFTW_ESTIMATE);
+		// load the derivative spectrum and transform it
 		for(int i=0; i<npoints; i++)
 			fftwin[i]=Spectrum(i, 1);
 		fftw_execute(fftwp); 
@@ -520,11 +598,14 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
 		for(int i=0; i<npoints; i++)
 			fftwin[i]*=0.5*exp(-pow(LWGauss*PI*(double)i/(4*sqrt(log(2.0))*(npoints-1)*MagneticParameter->fs), 2))/(double)(npoints-1);
 
+		// transform back
 		fftw_execute(fftwp); 
 
+		// store the broadened spectrum in column 1
 		for(int i=0; i<npoints; i++)
 			Spectrum(i, 1)=fftwin[i];
 
+		// release the FFTW plan and buffer
 		fftw_destroy_plan(fftwp);
 		fftw_free(fftwin); 
 	}
@@ -537,6 +618,7 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
 	cout << "Ins2 time: " << (float)time_inside2/CLOCKS_PER_SEC << " sec." << endl;
 */
 
+	// release the basis arrays and close the output files
 	free(Basis);
 	free(Basis1);
 	lioufile.close();
@@ -545,6 +627,7 @@ Matrix<double, Dynamic, 1> CalculateLiouvillianB(MagneticParameters *MagneticPar
 	timing.close();
 
 //	if(psi&&(!(MagneticParameter->isMonoradical)))  return Spectrum.col(1)*2*MagneticParameter->AmplitudeFactor/PI;
+	// return the broadened derivative spectrum scaled by the amplitude factor of all conformers divided by pi
 	return Spectrum.col(1)*MagneticParameter->AmplitudeFactorAllConformers/PI;
 
 }

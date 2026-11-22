@@ -30,6 +30,17 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+// BiradicalODF.h: the main header of Orthos. It defines the global size limits and the default bounds of the fitted
+// parameters (MAX_RANK, MAX_ORIENTATIONS, MAX_POT, MAX_TRUNC, MIN_GX, MAX_GX, ...), declares the classes shared by the whole
+// program (Hyperfine, Multiplet, Potential, OrderParameters, MagneticParameters, Experimental, DataForCalculation) and
+// declares many free functions, grouped under the name of the .cpp file that defines them. It contains no function
+// definitions, only declarations.
+// Used by: included directly by BasisB.cpp, BiradicalTransitions.cpp, Discrepancy.cpp, GaussKronrodIntegration.cpp,
+// Hyperfine.cpp, IndividualSpectrum.cpp, IntegratedSpectrum.cpp, Lanczos.cpp, LiouvillianB.cpp, Multiplet.cpp, ODF.cpp,
+// RWMagnetic.cpp, ReadExperimental.cpp, ReadNamenam.cpp, RotationMatrix.cpp, SphericalTensor.cpp,
+// SpinMatrixBiradicals.cpp, Version.cpp and main.cpp, and through LiouvilleMatrixElementB.h and VoitlanderIntegration.h
+// by the files that include those (for example Potential.cpp and Wigner3jMy.cpp).
+
 #include "BasisB.h"
 #include "SphericalTensor.h"
 #include "SpinMatrixB.h"
@@ -38,6 +49,9 @@ using namespace Eigen;
 using namespace std;
 
 #define PI 3.14159265357989
+// Array limits: MAX_RANK is the highest ODF rank Jmax (class OrderParameters), MAX_ORIENTATIONS the highest number of
+// recorded sample orientations (spectra), and MAX_ARG the highest number of fitted parameters in the optimiser argument
+// array (checked by NextArg).
 #define MAX_RANK 20
 #define MAX_ORIENTATIONS 50
 
@@ -47,6 +61,9 @@ using namespace std;
 #define MAX_STRLEN 1000
 #endif
 
+// MAX_POT is the highest even rank L of the mean-field potential expansion (Potential::A); the order parameters of the
+// potential are stored up to L=2*MAX_TRUNC (Potential::OP, SOP and the jump arrays); MAX_PARTICLES sizes the per-particle
+// arrays such as the conformer conversion-rate matrix.
 #define MAX_POT 6
 #define MAX_TRUNC 60
 
@@ -117,6 +134,10 @@ using namespace std;
 
 // Hyperfine Splitting:
 // File Hyperfine.cpp
+// Hyperfine: one group of equivalent nuclei with an isotropic hyperfine coupling: atom type, number of equivalent nuclei
+// (Degeneracy), nuclear spin (set from the atom type by SetMagneticFromName), and the coupling constant HFConstant with its
+// variate flag and optimiser argument number. MagneticParameters::HFS holds up to MAX_HFS such groups; member functions
+// are in Hyperfine.cpp.
 class Hyperfine
 {
 public:
@@ -134,6 +155,9 @@ public:
 };
 
 // File Multiplet.cpp
+// Multiplet: the stick spectrum of the isotropic hyperfine splitting of all groups in HFS: NLines lines, each with a
+// field shift (column 0 of Transitions) and a relative intensity (column 1); filled by SetFromHFS (Multiplet.cpp) and
+// applied to the simulated spectra in Discrepancy.cpp.
 class Multiplet
 {
 public:
@@ -178,6 +202,14 @@ Matrix<double, 3,3> RotationMatrix(double EulerAngles[3]);
 
 
 // File Potential.cpp
+// Potential: the mean-field orienting potential of a particle and the quantities derived from it (member functions in
+// Potential.cpp). A holds the potential coefficients A(L,K) (even L and K, K>=0) of the expansion over Wigner functions
+// D^L_0K, with their variate flags VF and optimiser argument numbers NArg. OP holds the order parameters of the
+// equilibrium orientation distribution and SOP those of its square root; OP2 and SOP2 are the same integrals computed with
+// the embedded Gauss rule (error estimate); OP_JUMP_P, OP_JUMP_M and the *2 copies are the order parameters of the
+// discrete-jump model for each jump axis; XLK_Matrix holds the coefficients of the rotational diffusion operator in the
+// potential. INT_NET and INT_NET_FI are the integration nets used by CalculateOP. Each MagneticParameters object owns one
+// Potential (member MFPotential) and MagneticParameterParent points back to it.
 class MagneticParameters;
 class Potential
 {
@@ -232,6 +264,8 @@ public:
 double wigner_d(int j, int m, int n, double beta);
 std::complex<double> ComplexWigner(int j, int m, int n, double alpha, double beta, double gamma);
 
+// OrderParameters: the orientation distribution function (ODF) of the particles, the sample orientations of the recorded
+// spectra and the fitted angle errors; member functions are in ODF.cpp, where the members are described in more detail.
 class OrderParameters
 {
 
@@ -310,6 +344,11 @@ public:
 
 
 // RWMagnetic.cpp
+// MagneticParameters: all spin Hamiltonian, relaxation, motion and numerical parameters of one particle (conformer): g
+// and hyperfine tensors, dipolar and exchange coupling, line widths, rotational diffusion and the mean-field potential
+// MFPotential, discrete-jump and libration models, the
+// integration nets and the basis truncations (LOmax, LEmax, Mmax, Kmax, Nmax). Every fitted parameter has a variate flag
+// (VF) and an optimiser argument number (NArg). Member functions are in RWMagnetic.cpp.
 class MagneticParameters
 {
 public:
@@ -498,6 +537,8 @@ void CalculateIntegratedSpectrumLiouville(MagneticParameters *MagneticParameter,
 int ReadName(MagneticParameters *MagneticParameter, OrderParameters *ODF, char* Magnetic_in_filename, char *ODF_in_filename, char* Magnetic_out_filename, char *ODF_out_filename);
 
 // ReadExperimental.cpp
+// Experimental: one experimental spectrum read from file (SpectrumX, SpectrumY), its interpolation on the simulation field
+// net (SpectrumInterpolated) and noise statistics; member functions are in ReadExperimental.cpp.
 class Experimental
 {
 public:
@@ -550,6 +591,8 @@ double Discrepancy(int NParticles,
 				   OrderParameters *ODF, const double *Arguments, double *R);
 
 
+// DataForCalculation: the problem data (particles, experimental spectra, magnetic parameters and ODFs) that the optimiser
+// hands back to the residual functions madr and myfunc (Discrepancy.cpp) through their user-data pointer.
 struct DataForCalculation
 {
 	int NParticles;
